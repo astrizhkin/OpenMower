@@ -129,7 +129,8 @@ void manageUILEDS();
 
 void setRaspiPower(bool power) {
     // Update status bits in the status message
-    status_message.status_bitmask = (status_message.status_bitmask & 0b11111101) | ((power & 0b1) << 1);
+    status_message.status_bitmask &= ~(1 << STATUS_RASPI_POWER_BIT);
+    status_message.status_bitmask |= (power & 0b1) << STATUS_RASPI_POWER_BIT;
     digitalWrite(PIN_RASPI_POWER, power);
 }
 
@@ -318,7 +319,6 @@ void setup1() {
     // Core
     digitalWrite(LED_BUILTIN, HIGH);
 }
-
 void loop1() {
     // Loop through the mux and query actions. Store the result in the multicore fifo
     for (uint8_t mux_address = 0; mux_address < 7; mux_address++) {
@@ -331,9 +331,9 @@ void loop1() {
                 mutex_enter_blocking(&mtx_status_message);
 
                 if (state || stock_ui_rain) {
-                    status_message.status_bitmask |= 0b00010000;
+                    status_message.status_bitmask |= 1 << STATUS_RAIN_BIT;
                 } else {
-                    status_message.status_bitmask &= 0b11101111;
+                    status_message.status_bitmask &= ~(1 << STATUS_RAIN_BIT);
                 }
                 mutex_exit(&mtx_status_message);
 
@@ -341,9 +341,9 @@ void loop1() {
             case 6:
                 mutex_enter_blocking(&mtx_status_message);
                 if (state) {
-                    status_message.status_bitmask |= 0b01000000;
+                    status_message.status_bitmask |= 1 << STATUS_SOUND_BUSY_BIT;
                 } else {
-                    status_message.status_bitmask &= 0b10111111;
+                    status_message.status_bitmask &= ~( 1 << STATUS_SOUND_BUSY_BIT);
                 }
                 mutex_exit(&mtx_status_message);
                 break;
@@ -419,11 +419,17 @@ void setup() {
     bool init_imu_success = false;
     int init_imu_tries = 1000;
     while(init_imu_tries --> 0) {
-        if(init_imu()) {
+#ifdef USB_DEBUG
+        if(init_imu(&DEBUG_SERIAL)) {
+#elif
+        if(init_imu(null)) {
+#endif
             init_imu_success = true;
             break;
         } 
+#ifdef USB_DEBUG
         DEBUG_SERIAL.println("IMU initialization unsuccessful, retrying in 1 sec");
+#endif
         p.neoPixelSetValue(0, 0, 0, 0, true);
         delay(1000);
         p.neoPixelSetValue(255, 255, 0, 0, true);
@@ -451,7 +457,7 @@ void setup() {
     DEBUG_SERIAL.println("Imu initialized");
 #endif
 
-    status_message.status_bitmask |= 1;
+    status_message.status_bitmask |= 1 << STATUS_INIT_BIT;
 
 #ifdef ENABLE_SOUND_MODULE
     p.neoPixelSetValue(0, 0, 255, 255, true);
@@ -503,7 +509,7 @@ void onUIPacketReceived(const uint8_t *buffer, size_t size) {
     {
         struct msg_get_version *msg = (struct msg_get_version *)buffer;
         ui_version = msg->version;
-        status_message.status_bitmask |= LL_STATUS_BIT_UI_AVAIL;
+        status_message.status_bitmask |= 1 << STATUS_UI_AVAIL_BIT;
         ui_get_version_respond_timeout = 0;
     }
     else if (buffer[0] == Get_Button && size == sizeof(struct msg_event_button))
@@ -641,8 +647,11 @@ void loop() {
 #else
         status_message.charging_current = -1.0f;
 #endif
-        status_message.status_bitmask = (status_message.status_bitmask & 0b11111011) | ((charging_allowed & 0b1) << 2);
-        status_message.status_bitmask = (status_message.status_bitmask & 0b11011111) | ((sound_available & 0b1) << 5);
+        status_message.status_bitmask &= ~(1 << STATUS_CHARGING_ALLOWED_BIT);
+        status_message.status_bitmask |= (charging_allowed & 0b1) << STATUS_CHARGING_ALLOWED_BIT;
+
+        status_message.status_bitmask &= ~(1 << STATUS_SOUND_AVAILABLE_BIT);
+        status_message.status_bitmask |= (sound_available & 0b1) << STATUS_SOUND_AVAILABLE_BIT;
 
         // calculate percent value accu filling
         float delta = BATT_FULL - BATT_EMPTY;
@@ -673,6 +682,21 @@ void loop() {
         DEBUG_SERIAL.print("emergency: 0b");
         DEBUG_SERIAL.print(status_message.emergency_bitmask, BIN);
         DEBUG_SERIAL.println();
+
+        DEBUG_SERIAL.print("acc x");
+        DEBUG_SERIAL.print(imu_message.acceleration_mss[0], 2);
+        DEBUG_SERIAL.print("\ty");
+        DEBUG_SERIAL.print(imu_message.acceleration_mss[1], 2);
+        DEBUG_SERIAL.print("\tz");
+        DEBUG_SERIAL.print(imu_message.acceleration_mss[2], 2);
+        DEBUG_SERIAL.print("\tgyro x");
+        DEBUG_SERIAL.print(imu_message.gyro_rads[0], 2);
+        DEBUG_SERIAL.print("\ty");
+        DEBUG_SERIAL.print(imu_message.gyro_rads[1], 2);
+        DEBUG_SERIAL.print("\tz");
+        DEBUG_SERIAL.print(imu_message.gyro_rads[2], 2);
+        DEBUG_SERIAL.println();
+
 #endif
     }
 
@@ -689,7 +713,7 @@ void loop() {
     // Check UI version/available
     if (ui_get_version_respond_timeout && now > ui_get_version_respond_timeout)
     {
-        status_message.status_bitmask &= ~LL_STATUS_BIT_UI_AVAIL;
+        status_message.status_bitmask &= ~(1 << STATUS_UI_AVAIL_BIT);
         ui_version = 0;
         ui_get_version_respond_timeout = 0;
     }

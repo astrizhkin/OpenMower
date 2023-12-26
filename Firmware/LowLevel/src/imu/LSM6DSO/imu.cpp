@@ -15,7 +15,7 @@ LSM6DSOSensor IMU(&spiBus, PIN_IMU_CS, 1000000);
 int32_t accelerometer[3];
 int32_t gyroscope[3];
 
-bool init_imu() {
+bool init_imu(Stream* serial) {
 #ifdef HW_0_12_X
   spiBus.begin();
 #else
@@ -27,14 +27,29 @@ bool init_imu() {
 #endif
 
     int status = IMU.begin();
+    if(status != 0) {
+        if(serial) {
+            serial->print("IMU begin failed ");
+            serial->print(status, BIN);
+            serial->print("\n");
+        }
+        return false;
+    } else {
+        if(serial) {
+            serial->println("IMU begin succeded");
+        }
+    }
 
     uint8_t WHOAMI = 0;
     IMU.ReadID(&WHOAMI);
-    if(WHOAMI != 0b01101100)
+    if(WHOAMI != 0b01101010 || WHOAMI != 0b01101100) {
+        if(serial) {
+            serial->print("IMU initialization WHOAMI ");
+            serial->print(WHOAMI, BIN);
+            serial->print("\n");
+        }
         return false;
-
-    if (status != 0)
-        return false;
+    }
 
     if (IMU.Enable_G() != 0)
         return false;

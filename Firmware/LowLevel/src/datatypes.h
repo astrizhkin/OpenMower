@@ -32,7 +32,14 @@ enum HighLevelMode {
     MODE_RECORDING = 3 // ROS connected, Manual mode during recording etc
 };
 
-#define LL_STATUS_BIT_UI_AVAIL 0b10000000
+#define STATUS_INIT_BIT 0
+#define STATUS_RASPI_POWER_BIT 1
+#define STATUS_CHARGING_ALLOWED_BIT 2
+#define STATUS_UNUSED_BIT 4
+#define STATUS_RAIN_BIT 4
+#define STATUS_SOUND_AVAILABLE_BIT 5
+#define STATUS_SOUND_BUSY_BIT 6
+#define STATUS_UI_AVAIL_BIT 7
 
 #pragma pack(push, 1)
 struct ll_status {

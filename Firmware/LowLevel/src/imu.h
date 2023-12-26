@@ -1,7 +1,8 @@
+#include <Arduino.h>
 #ifndef _IMU_H
 #define _IMU_H
 
-bool init_imu();
+bool init_imu(Stream* stream);
 
 bool imu_read(float *acceleration_mss,float *gyro_rads,float *mag_uT);
 
