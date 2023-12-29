@@ -14,28 +14,34 @@
 // SOFTWARE.
 //
 //
-#include <NeoPixelConnect.h>
 #include <Arduino.h>
 #include <FastCRC.h>
 #include <PacketSerial.h>
 #include "datatypes.h"
 #include "pins.h"
-#include "ui_board.h"
 #include "imu.h"
+#include <U8x8lib.h>
+//#include <U8g2lib.h>
+#include <Wire.h>
 
-#ifdef ENABLE_SOUND_MODULE
-#include <soundsystem.h>
-#endif
+#define IMU_CYCLETIME_MS 20              // cycletime for refresh IMU data
+#define STATUS_CYCLETIME_MS 100          // cycletime for refresh analog and digital Statusvalues
+#define DISPLAY_CYCLETIME_MS 200      // cycletime for refresh UI status LEDs
 
-#define IMU_CYCLETIME 20              // cycletime for refresh IMU data
-#define STATUS_CYCLETIME 100          // cycletime for refresh analog and digital Statusvalues
-#define UI_SET_LED_CYCLETIME 1000     // cycletime for refresh UI status LEDs
-#define UI_GET_VERSION_CYCLETIME 5000 // cycletime for UI Get_Version request (UI available check)
-#define UI_GET_VERSION_TIMEOUT 100    // timeout for UI Get_Version response (UI available check)
+#define TILT_EMERGENCY_MS 2500  // Time for a single wheel to be lifted in order to count as emergency. This is to filter uneven ground.
+#define LIFT_EMERGENCY_MS 100  // Time for both wheels to be lifted in order to count as emergency. This is to filter uneven ground.
+#define BUTTON_EMERGENCY_MS 20 // Time for button emergency to activate. This is to debounce the button if triggered on bumpy surfaces
 
-#define TILT_EMERGENCY_MILLIS 2500  // Time for a single wheel to be lifted in order to count as emergency. This is to filter uneven ground.
-#define LIFT_EMERGENCY_MILLIS 100  // Time for both wheels to be lifted in order to count as emergency. This is to filter uneven ground.
-#define BUTTON_EMERGENCY_MILLIS 20 // Time for button emergency to activate. This is to debounce the button if triggered on bumpy surfaces
+// Emergency will be engaged, if no heartbeat was received in this time frame.
+#define HEARTBEAT_TIMEOUT_MS 500
+#define HIGH_LEVEL_TIMEOUT_MS 5000
+#define IMU_TIMEOUT_MS 200
+
+#define USS_TIMEOUT_MS 1000
+#define USS_COUNT 5
+#define USS_ENABLED 0b11000
+#define USS_CYCLETIME_MS 50
+#define USS_ECHO_TIMEOUT_US 50000UL
 
 // Define to stream debugging messages via USB
 // #define USB_DEBUG
@@ -43,17 +49,13 @@
 // Only define DEBUG_SERIAL if USB_DEBUG is actually enabled.
 // This enforces compile errors if it's used incorrectly.
 #ifdef USB_DEBUG
-#define DEBUG_SERIAL Serial
+    #define DEBUG_SERIAL Serial
 #endif
+
 #define PACKET_SERIAL Serial1
-SerialPIO uiSerial(PIN_UI_TX, PIN_UI_RX, 250);
-
-#define UI1_SERIAL uiSerial
-
-#define ANZ_SOUND_SD_FILES 3
 
 // Millis after charging is retried
-#define CHARGING_RETRY_MILLIS 10000
+#define CHARGING_RETRY_MS 10000
 
 /**
  * @brief Some hardware parameters
@@ -69,35 +71,18 @@ SerialPIO uiSerial(PIN_UI_TX, PIN_UI_RX, 250);
 #define BATT_FULL BATT_ABS_MAX - 0.3f
 #define BATT_EMPTY BATT_ABS_Min + 0.3f
 
-// Emergency will be engaged, if no heartbeat was received in this time frame.
-#define HEARTBEAT_MILLIS 500
-
-NeoPixelConnect p(PIN_NEOPIXEL, 1);
-uint8_t led_blink_counter = 0;
-
 PacketSerial packetSerial; // COBS communication PICO <> Raspi
-PacketSerial UISerial;     // COBS communication PICO UI-Board
 FastCRC16 CRC16;
 
-#ifdef ENABLE_SOUND_MODULE
-MP3Sound my_sound; // Soundsystem
-#endif
+unsigned long last_imu_ms = 0;
+unsigned long last_status_update_ms = 0;
+unsigned long last_heartbeat_ms = 0;
+unsigned long last_high_level_ms = 0;
+unsigned long last_display_ms = 0;
 
-unsigned long last_imu_millis = 0;
-unsigned long last_status_update_millis = 0;
-unsigned long last_heartbeat_millis = 0;
-unsigned long last_UILED_millis = 0;
-
-unsigned long lift_emergency_started = 0;
-unsigned long tilt_emergency_started = 0;
-unsigned long button_emergency_started = 0;
-
-unsigned long ui_get_version_next_millis = 0;     // Next cycle when to check for a UI version
-unsigned long ui_get_version_respond_timeout = 0; // When UI Get_Version response times out
-
-// Stock UI
-uint8_t stock_ui_emergency_state = 0; // Get set by received Get_Emergency packet
-bool stock_ui_rain = false;           // Get set by received Get_Rain packet
+unsigned long lift_emergency_started_ms = 0;
+unsigned long tilt_emergency_started_ms = 0;
+unsigned long button_emergency_started_ms = 0;
 
 // Predefined message buffers, so that we don't need to allocate new ones later.
 struct ll_imu imu_message = {0};
@@ -105,27 +90,37 @@ struct ll_status status_message = {0};
 // current high level state
 struct ll_high_level_state last_high_level_state = {0};
 
-// Struct for the current LEDs. This gets sent to the UI periodically
-struct msg_set_leds leds_message = {0};
-
 // A mutex which is used by core1 each time status_message is modified.
 // We can lock it during message transmission to prevent core1 to modify data in this time.
 auto_init_mutex(mtx_status_message);
 
 bool emergency_latch = true;
-bool sound_available = false;
 bool charging_allowed = false;
 bool ROS_running = false;
 unsigned long charging_disabled_time = 0;
 
 float imu_temp[9];
-uint16_t ui_version = 0; // Last received UI (firmware =? protocol) version. 200 = Latest Button-/LED-CoverUI. >= 300 = More intelligent Display which handles values & states instead of LEDs & Buttons?!
+
+//display status messages
+char    status_line[16+1];
+uint8_t status_line_blink[16];
+char    ll_display_emerg[8+1]; //8 bit chars or char enchoded messages
+uint8_t ll_display_emerg_blink[8];
+uint8_t displayUpdateCounter = 0;
+char    display_line[16+1]; //16 chars
+
+
+unsigned long last_uss_sensor_result_ms[USS_COUNT];
+unsigned long last_uss_trigger=0;
+
+#define DISPLAY_WIRE Wire
+U8X8_SSD1309_128X64_NONAME0_HW_I2C display(U8X8_PIN_NONE);
+//U8G2_SSD1309_128X64_NONAME0_2_HW_I2C display(U8G2_R0, PIN_DISPLAY_RESET, PIN_DISPLAY_SCK, PIN_DISPLAY_SDA);
 
 void sendMessage(void *message, size_t size);
-void sendUIMessage(void *message, size_t size);
+void updateDisplay(bool forceDisplay);
+void updateBlinkState(char *message, uint8_t blinkState, int size, int currentBlinkState);
 void onPacketReceived(const uint8_t *buffer, size_t size);
-void onUIPacketReceived(const uint8_t *buffer, size_t size);
-void manageUILEDS();
 
 void setRaspiPower(bool power) {
     // Update status bits in the status message
@@ -134,20 +129,28 @@ void setRaspiPower(bool power) {
     digitalWrite(PIN_RASPI_POWER, power);
 }
 
-void updateEmergency() {
+void setEscEnable(bool enable) {
+    // Update status bits in the status message
+    status_message.status_bitmask &= ~(1 << STATUS_ESC_ENABLED_BIT);
+    status_message.status_bitmask |= (enable & 1) << STATUS_ESC_ENABLED_BIT;
+    digitalWrite(PIN_ESC_ENABLE, enable);
+}
 
-    if (millis() - last_heartbeat_millis > HEARTBEAT_MILLIS) {
+void updateEmergency() {
+    unsigned long now = millis();
+    if (now - last_heartbeat_ms > HEARTBEAT_TIMEOUT_MS) {
         emergency_latch = true;
         ROS_running = false;
     }
-    uint8_t last_emergency = status_message.emergency_bitmask & 1;
+    uint8_t last_emergency = status_message.emergency_bitmask & (1<<EMERGENCY_LATCH_BIT);
 
     // Mask the emergency bits. 2x Lift sensor, 2x Emergency Button
-    bool emergency1 = !gpio_get(PIN_EMERGENCY_1) | (stock_ui_emergency_state & Emergency_state::Emergency_lift1);
-    bool emergency2 = !gpio_get(PIN_EMERGENCY_2) | (stock_ui_emergency_state & Emergency_state::Emergency_lift2);
-    bool emergency3 = !gpio_get(PIN_EMERGENCY_3) | (stock_ui_emergency_state & Emergency_state::Emergency_stop1);
-    bool emergency4 = !gpio_get(PIN_EMERGENCY_4) | (stock_ui_emergency_state & Emergency_state::Emergency_stop2);
+    bool emergency1 = !gpio_get(PIN_EMERGENCY_1);
+    bool emergency2 = !gpio_get(PIN_EMERGENCY_2);
+    bool emergency3 = !gpio_get(PIN_EMERGENCY_3);
+    bool emergency4 = !gpio_get(PIN_EMERGENCY_4);
 
+    now = millis();
     uint8_t emergency_state = 0;
 
     bool is_tilted = emergency1 || emergency2;
@@ -156,163 +159,89 @@ void updateEmergency() {
 
     if (is_lifted) {
         // We just lifted, store the timestamp
-        if (lift_emergency_started == 0) {
-            lift_emergency_started = millis();
+        if (lift_emergency_started_ms == 0) {
+            lift_emergency_started_ms = now;
         }
     } else {
         // Not lifted, reset the time
-        lift_emergency_started = 0;
+        lift_emergency_started_ms = 0;
     }
 
     if (stop_pressed) {
         // We just pressed, store the timestamp
-        if (button_emergency_started == 0) {
-            button_emergency_started = millis();
+        if (button_emergency_started_ms == 0) {
+            button_emergency_started_ms = now;
         }
     } else {
         // Not pressed, reset the time
-        button_emergency_started = 0;
+        button_emergency_started_ms = 0;
     }
 
-    if (lift_emergency_started > 0 && (millis() - lift_emergency_started) >= LIFT_EMERGENCY_MILLIS) {
+    if (lift_emergency_started_ms > 0 && (now - lift_emergency_started_ms) >= LIFT_EMERGENCY_MS) {
         // Emergency bit 2 (lift wheel 1)set?
         if (emergency1)
-            emergency_state |= 0b01000;
+            emergency_state |= 1<<EMERGENCY_LIFT1_BIT;
         // Emergency bit 1 (lift wheel 2)set?
         if (emergency2)
-            emergency_state |= 0b10000;
+            emergency_state |= 1<<EMERGENCY_LIFT2_BIT;
     }
 
     if (is_tilted) {
         // We just tilted, store the timestamp
-        if (tilt_emergency_started == 0) {
-            tilt_emergency_started = millis();
+        if (tilt_emergency_started_ms == 0) {
+            tilt_emergency_started_ms = now;
         }
     } else {
         // Not tilted, reset the time
-        tilt_emergency_started = 0;
+        tilt_emergency_started_ms = 0;
     }
 
- if (tilt_emergency_started > 0 && (millis() - tilt_emergency_started) >= TILT_EMERGENCY_MILLIS) {
+    if (tilt_emergency_started_ms > 0 && (now - tilt_emergency_started_ms) >= TILT_EMERGENCY_MS) {
         // Emergency bit 2 (lift wheel 1)set?
         if (emergency1)
-            emergency_state |= 0b01000;
+            emergency_state |= 1<<EMERGENCY_LIFT1_BIT;
         // Emergency bit 1 (lift wheel 2)set?
         if (emergency2)
-            emergency_state |= 0b10000;
+            emergency_state |= 1<<EMERGENCY_LIFT2_BIT;
     }
-    if (button_emergency_started > 0 && (millis() - button_emergency_started) >= BUTTON_EMERGENCY_MILLIS) {
+    if (button_emergency_started_ms > 0 && (now - button_emergency_started_ms) >= BUTTON_EMERGENCY_MS) {
         // Emergency bit 2 (stop button) set?
         if (emergency3)
-            emergency_state |= 0b00010;
+            emergency_state |= 1<<EMERGENCY_BUTTON1_BIT;
         // Emergency bit 1 (stop button)set?
         if (emergency4)
-            emergency_state |= 0b00100;
+            emergency_state |= 1<<EMERGENCY_BUTTON2_BIT;
     }
 
+    // Check USS timouts
+    for(int i=0;i<USS_COUNT;i++) {
+        if( (USS_ENABLED & (1<<i)) && (status_message.uss_age_ms[i] > USS_TIMEOUT_MS)) {
+            emergency_state |= 1<<EMERGENCY_USS_BIT;
+        }
+    }
+
+    // Check IMU temeout
+    if( now - last_imu_ms > IMU_TIMEOUT_MS ) {
+        emergency_state |= 1<<EMERGENCY_IMU_BIT;
+    }
+
+    //ESC must be enabled 
+    setEscEnable(emergency_state==0 && ROS_running);
+
     if (emergency_state || emergency_latch) {
-        emergency_latch |= 1;
-        emergency_state |= 1;
+        emergency_latch = true;
+        emergency_state |= 1<<EMERGENCY_LATCH_BIT;
     }
 
     status_message.emergency_bitmask = emergency_state;
 
     // If it's a new emergency, instantly send the message. This is to not spam the channel during emergencies.
-    if (last_emergency != (emergency_state & 1)) {
+    if (last_emergency != (emergency_state & (1<<EMERGENCY_LATCH_BIT))) {
         sendMessage(&status_message, sizeof(struct ll_status));
 
         // Update LEDs instantly
-        manageUILEDS();
+        updateDisplay(true);
     }
-}
-
-// deals with the pyhsical information an control the UI-LEDs und buzzer in depency of voltage und current values
-void manageUILEDS() {
-    // Show Info Docking LED
-    if ((status_message.charging_current > 0.80f) && (status_message.v_charge > 20.0f))
-        setLed(leds_message, LED_CHARGING, LED_blink_fast);
-    else if ((status_message.charging_current <= 0.80f) && (status_message.charging_current >= 0.15f) &&
-             (status_message.v_charge > 20.0f))
-        setLed(leds_message, LED_CHARGING, LED_blink_slow);
-    else if ((status_message.charging_current < 0.15f) && (status_message.v_charge > 20.0f))
-        setLed(leds_message, LED_CHARGING, LED_on);
-    else
-        setLed(leds_message, LED_CHARGING, LED_off);
-
-    // Show Info Battery state
-    if (status_message.v_battery >= (BATT_EMPTY + 2.0f))
-        setLed(leds_message, LED_BATTERY_LOW, LED_off);
-    else
-        setLed(leds_message, LED_BATTERY_LOW, LED_on);
-
-    if (status_message.v_charge < 10.0f) // activate only when undocked
-    {
-        // use the first LED row as bargraph
-        setBars7(leds_message, status_message.batt_percentage / 100.0);
-        if (last_high_level_state.gps_quality == 0) {
-            // if quality is 0, flash all LEDs to notify the user to calibrate.
-            setBars4(leds_message, -1.0);
-        } else {
-            setBars4(leds_message, last_high_level_state.gps_quality / 100.0);
-        }
-    } else {
-        setBars7(leds_message, 0);
-        setBars4(leds_message, 0);
-    }
-
-    if (last_high_level_state.gps_quality < 25) {
-        setLed(leds_message, LED_POOR_GPS, LED_on);
-    } else if (last_high_level_state.gps_quality < 50) {
-        setLed(leds_message, LED_POOR_GPS, LED_blink_fast);
-    } else if (last_high_level_state.gps_quality < 75) {
-        setLed(leds_message, LED_POOR_GPS, LED_blink_slow);
-    } else {
-        setLed(leds_message, LED_POOR_GPS, LED_off);
-    }
-
-    // Let S1 show if ros is connected and which state it's in
-    if (!ROS_running) {
-        setLed(leds_message, LED_S1, LED_off);
-    } else {
-        switch (last_high_level_state.current_mode & 0b111111) {
-            case HighLevelMode::MODE_IDLE:
-                setLed(leds_message, LED_S1, LED_on);
-                break;
-            case HighLevelMode::MODE_AUTONOMOUS:
-                setLed(leds_message, LED_S1, LED_blink_slow);
-                break;
-            default:
-                setLed(leds_message, LED_S1, LED_blink_fast);
-                break;
-        }
-        switch ((last_high_level_state.current_mode >> 6) & 0b11) {
-            case 1:
-                setLed(leds_message, LED_S2, LED_blink_slow);
-                break;
-            case 2:
-                setLed(leds_message, LED_S2, LED_blink_fast);
-                break;
-            case 3:
-                setLed(leds_message, LED_S2, LED_on);
-                break;
-            default:
-                setLed(leds_message, LED_S2, LED_off);
-                break;
-        }
-    }
-
-    // Show Info mower lifted or stop button pressed
-    if (status_message.emergency_bitmask & 0b00110) {
-        setLed(leds_message, LED_MOWER_LIFTED, LED_blink_fast);
-    } else if (status_message.emergency_bitmask & 0b11000) {
-        setLed(leds_message, LED_MOWER_LIFTED, LED_blink_slow);
-    } else if (status_message.emergency_bitmask & 0b0000001) {
-        setLed(leds_message, LED_MOWER_LIFTED, LED_on);
-    } else {
-        setLed(leds_message, LED_MOWER_LIFTED, LED_off);
-    }
-
-    sendUIMessage(&leds_message, sizeof(leds_message));
 }
 
 void setup1() {
@@ -321,38 +250,82 @@ void setup1() {
 }
 void loop1() {
     // Loop through the mux and query actions. Store the result in the multicore fifo
+    bool state;
+    double distance;
+    unsigned long duration;
+    unsigned long wait_us,response_us,uss_measurement_age;   
+
     for (uint8_t mux_address = 0; mux_address < 7; mux_address++) {
         gpio_put_masked(0b111 << 13, mux_address << 13);
         delay(1);
-        bool state = gpio_get(PIN_MUX_IN);
+        
+        if(mux_address<USS_COUNT) {
+            if ( (USS_ENABLED & (1 << mux_address))==0 ) {
+                duration = 0;
+                distance = 0;
+                continue;
+            }
+            digitalWrite(PIN_MUX_OUT, LOW); 
+            unsigned long prev_uss_delta = millis()-last_uss_trigger;
+            if(prev_uss_delta < USS_CYCLETIME_MS) {
+                wait_us = (USS_CYCLETIME_MS-prev_uss_delta)*1000;
+            }else{
+                wait_us = 5;
+            }
+            delayMicroseconds(wait_us);
+            // Sets the trigPin on HIGH state for 20 micro seconds at least
+            digitalWrite(PIN_MUX_OUT, HIGH); 
+            delayMicroseconds(25);
+            last_uss_trigger = millis();
+            digitalWrite(PIN_MUX_OUT, LOW);
+            duration = pulseIn(PIN_MUX_IN, HIGH,USS_ECHO_TIMEOUT_US); // 35000UL for full cycle, Reads the echoPin, returns the sound wave travel time in microseconds
+            distance = duration*0.343/2;//0.343mm per 1 microsecond
+            /*if(distance < 2000) {
+                distance = 0;
+            }*/
+            response_us = millis()-last_uss_trigger;
+            #ifdef USB_DEBUG
+                DEBUG_SERIAL.printf("%i %icm %ius wt %ims rsp %ims\t",mux_address,(int)(distance/10),duration,wait_us/1000,response_us);
+            #endif
+        } else {
+            state = gpio_get(PIN_MUX_IN);
+        }
 
+        mutex_enter_blocking(&mtx_status_message);
         switch (mux_address) {
-            case 5:
-                mutex_enter_blocking(&mtx_status_message);
-
-                if (state || stock_ui_rain) {
-                    status_message.status_bitmask |= 1 << STATUS_RAIN_BIT;
-                } else {
-                    status_message.status_bitmask &= ~(1 << STATUS_RAIN_BIT);
+            case 0:
+            case 1:
+            case 2:
+            case 3:
+            case 4:
+                if(duration!=0) {
+                    status_message.uss_ranges_m[mux_address]=distance/1000;
+                    last_uss_sensor_result_ms[mux_address]=last_uss_trigger;
                 }
-                mutex_exit(&mtx_status_message);
-
+                uss_measurement_age = millis() - last_uss_sensor_result_ms[mux_address];
+                if(uss_measurement_age > UINT16_MAX) {
+                    uss_measurement_age = UINT16_MAX;
+                }
+                status_message.uss_age_ms[mux_address] = uss_measurement_age;
                 break;
-            case 6:
-                mutex_enter_blocking(&mtx_status_message);
+            case 5:
+                //inverted
                 if (state) {
-                    status_message.status_bitmask |= 1 << STATUS_SOUND_BUSY_BIT;
+                    status_message.status_bitmask &= ~(1 << STATUS_RAIN_BIT);
                 } else {
-                    status_message.status_bitmask &= ~( 1 << STATUS_SOUND_BUSY_BIT);
+                    status_message.status_bitmask |= 1 << STATUS_RAIN_BIT;
                 }
-                mutex_exit(&mtx_status_message);
                 break;
             default:
                 break;
         }
+        mutex_exit(&mtx_status_message);
     }
+    #ifdef USB_DEBUG
+        DEBUG_SERIAL.println();
+    #endif
 
-    delay(100);
+    delay(10);
 }
 
 void setup() {
@@ -361,14 +334,22 @@ void setup() {
     rp2040.idleOtherCore();
 
 #ifdef USB_DEBUG
+    int wait_count = 500;
     DEBUG_SERIAL.begin(9600);
+    while(!DEBUG_SERIAL && wait_count-- > 0){
+        delay(10);
+    }
+#endif
+    
+#ifdef USB_DEBUG
+    DEBUG_SERIAL.println("Begin initialization");
 #endif
 
     emergency_latch = true;
     ROS_running = false;
 
-    lift_emergency_started = 0;
-    button_emergency_started = 0;
+    lift_emergency_started_ms = 0;
+    button_emergency_started_ms = 0;
     // Initialize messages
     imu_message = {0};
     status_message = {0};
@@ -378,19 +359,33 @@ void setup() {
     // Setup pins
     pinMode(LED_BUILTIN, OUTPUT);
     pinMode(PIN_ENABLE_CHARGE, OUTPUT);
-    digitalWrite(PIN_ENABLE_CHARGE, HIGH);
+    pinMode(PIN_RASPI_POWER,OUTPUT);
+    pinMode(PIN_ESC_ENABLE, OUTPUT);
 
-    gpio_init(PIN_RASPI_POWER);
-    gpio_put(PIN_RASPI_POWER, true);
-    gpio_set_dir(PIN_RASPI_POWER, true);
-    gpio_put(PIN_RASPI_POWER, true);
-
+    DISPLAY_WIRE.setSDA(PIN_DISPLAY_SDA);
+    DISPLAY_WIRE.setSCL(PIN_DISPLAY_SCK);
+#ifdef USB_DEBUG
+    DEBUG_SERIAL.println("Display init");
+#endif
+    display.begin();
+#ifdef USB_DEBUG
+    DEBUG_SERIAL.println("Load font");
+#endif
+    //display.setFont(u8x8_font_artossans8_r);//capital A - 7
+    display.setFont(u8x8_font_chroma48medium8_r);//capital A - 6
+   
+    display.drawString(0,0,"Mover v0.1");
+    delay(100);
     // Enable raspi power
-    p.neoPixelSetValue(0, 32, 0, 0, true);
-    delay(1000);
+#ifdef USB_DEBUG
+    DEBUG_SERIAL.println("Power RPi");
+#endif
+    display.drawString(0,1,"Power pins...");
+    delay(100);
     setRaspiPower(true);
-    p.neoPixelSetValue(0, 255, 0, 0, true);
+    setEscEnable(false);
 
+    pinMode(PIN_MUX_IN, INPUT);
     pinMode(PIN_MUX_OUT, OUTPUT);
     pinMode(PIN_MUX_ADDRESS_0, OUTPUT);
     pinMode(PIN_MUX_ADDRESS_1, OUTPUT);
@@ -407,22 +402,22 @@ void setup() {
     PACKET_SERIAL.begin(115200);
     packetSerial.setStream(&PACKET_SERIAL);
     packetSerial.setPacketHandler(&onPacketReceived);
-
-    UI1_SERIAL.begin(115200);
-    UISerial.setStream(&UI1_SERIAL);
-    UISerial.setPacketHandler(&onUIPacketReceived);
+#ifdef USB_DEBUG
+    DEBUG_SERIAL.println("IMU init");
+#endif
 
     /*
      * IMU INITIALIZATION
      */
-
+    display.drawString(0,2,"IMU init...");
+    delay(100);
     bool init_imu_success = false;
     int init_imu_tries = 1000;
     while(init_imu_tries --> 0) {
 #ifdef USB_DEBUG
         if(init_imu(&DEBUG_SERIAL)) {
-#elif
-        if(init_imu(null)) {
+#else
+        if(init_imu(0)) {
 #endif
             init_imu_success = true;
             break;
@@ -430,12 +425,7 @@ void setup() {
 #ifdef USB_DEBUG
         DEBUG_SERIAL.println("IMU initialization unsuccessful, retrying in 1 sec");
 #endif
-        p.neoPixelSetValue(0, 0, 0, 0, true);
-        delay(1000);
-        p.neoPixelSetValue(255, 255, 0, 0, true);
-        delay(100);
-        p.neoPixelSetValue(0, 0, 0, 0, true);
-        delay(100);
+        display.drawString(0,3,"IMU fail! Retry");
     }
 
     if (!init_imu_success) {
@@ -443,94 +433,27 @@ void setup() {
         DEBUG_SERIAL.println("IMU initialization unsuccessful");
         DEBUG_SERIAL.println("Check IMU wiring or try cycling power");
 #endif
+        display.drawString(0,3,"IMU fail!!!");
         status_message.status_bitmask = 0;
         while (1) { // Blink RED for IMU failure
-            p.neoPixelSetValue(0, 255, 0, 0, true);
-            delay(500);
-            p.neoPixelSetValue(0, 0, 0, 0, true);
-            delay(500);
+            updateDisplay(true);
+            delay(200);
         }
     }
-    p.neoPixelSetValue(0, 255, 255, 255, true);     // White for IMU Success
 
+    display.drawString(0,3,"IMU success");
 #ifdef USB_DEBUG
-    DEBUG_SERIAL.println("Imu initialized");
+    DEBUG_SERIAL.println("IMU initialized");
 #endif
+    delay(100);
 
     status_message.status_bitmask |= 1 << STATUS_INIT_BIT;
 
-#ifdef ENABLE_SOUND_MODULE
-    p.neoPixelSetValue(0, 0, 255, 255, true);
-
-    sound_available = my_sound.begin();
-    if (sound_available) {
-        p.neoPixelSetValue(0, 0, 0, 255, true);
-        my_sound.setvolume(100);
-        my_sound.playSoundAdHoc(1);
-        p.neoPixelSetValue(0, 255, 255, 0, true);
-    } else {
-        for (uint8_t b = 0; b < 3; b++) {
-            p.neoPixelSetValue(0, 0, 0, 0, true);
-            delay(200);
-            p.neoPixelSetValue(0, 0, 0, 255, true);
-            delay(200);
-        }
-    }
-#endif
-
     rp2040.resumeOtherCore();
 
-    // Cover UI board clear all LEDs
-    leds_message.type = Set_LEDs;
-    leds_message.leds = 0;
-    sendUIMessage(&leds_message, sizeof(leds_message));
-
-    p.neoPixelSetValue(0, 255, 255, 255, true);     // White 1s final success
-    delay(1000);
-}
-
-void onUIPacketReceived(const uint8_t *buffer, size_t size) {
-
-    u_int16_t *crc_pointer = (uint16_t *) (buffer + (size - 2));
-    u_int16_t readcrc = *crc_pointer;
-
-    // check structure size
-    if (size < 4)
-        return;
-
-    // check the CRC
-    uint16_t crc = CRC16.ccitt(buffer, size - 2);
-
-    if (buffer[size - 1] != ((crc >> 8) & 0xFF) ||
-        buffer[size - 2] != (crc & 0xFF))
-        return;
-
-    if (buffer[0] == Get_Version && size == sizeof(struct msg_get_version))
-    {
-        struct msg_get_version *msg = (struct msg_get_version *)buffer;
-        ui_version = msg->version;
-        status_message.status_bitmask |= 1 << STATUS_UI_AVAIL_BIT;
-        ui_get_version_respond_timeout = 0;
-    }
-    else if (buffer[0] == Get_Button && size == sizeof(struct msg_event_button))
-    {
-        struct msg_event_button *msg = (struct msg_event_button *)buffer;
-        struct ll_ui_event ui_event;
-        ui_event.type = PACKET_ID_LL_UI_EVENT;
-        ui_event.button_id = msg->button_id;
-        ui_event.press_duration = msg->press_duration;
-        sendMessage(&ui_event, sizeof(ui_event));
-    }
-    else if (buffer[0] == Get_Emergency && size == sizeof(struct msg_event_emergency))
-    {
-        struct msg_event_emergency *msg = (struct msg_event_emergency *)buffer;
-        stock_ui_emergency_state = msg->state;
-    }
-    else if (buffer[0] == Get_Rain && size == sizeof(struct msg_event_rain))
-    {
-        struct msg_event_rain *msg = (struct msg_event_rain *)buffer;
-        stock_ui_rain = (msg->value < msg->threshold);
-    }
+    display.drawString(0,4,"Init completed");
+    delay(500);
+    display.clear();
 }
 
 void onPacketReceived(const uint8_t *buffer, size_t size) {
@@ -548,7 +471,7 @@ void onPacketReceived(const uint8_t *buffer, size_t size) {
     if (buffer[0] == PACKET_ID_LL_HEARTBEAT && size == sizeof(struct ll_heartbeat)) {
 
         // CRC and packet is OK, reset watchdog
-        last_heartbeat_millis = millis();
+        last_heartbeat_ms = millis();
         ROS_running = true;
         struct ll_heartbeat *heartbeat = (struct ll_heartbeat *) buffer;
         if (heartbeat->emergency_release_requested) {
@@ -561,6 +484,7 @@ void onPacketReceived(const uint8_t *buffer, size_t size) {
     } else if (buffer[0] == PACKET_ID_LL_HIGH_LEVEL_STATE && size == sizeof(struct ll_high_level_state)) {
         // copy the state
         last_high_level_state = *((struct ll_high_level_state *) buffer);
+        last_high_level_ms = millis();
     }
 }
 
@@ -578,7 +502,7 @@ void updateChargingEnabled() {
         }
     } else {
         // enable charging after CHARGING_RETRY_MILLIS
-        if (millis() - charging_disabled_time > CHARGING_RETRY_MILLIS) {
+        if (millis() - charging_disabled_time > CHARGING_RETRY_MS) {
             if (!checkShouldCharge()) {
                 digitalWrite(PIN_ENABLE_CHARGE, LOW);
                 charging_allowed = false;
@@ -591,52 +515,33 @@ void updateChargingEnabled() {
     }
 }
 
-void updateNeopixel() {
-    led_blink_counter++;
-    // flash red on emergencies
-    if (emergency_latch && led_blink_counter & 0b10) {
-        p.neoPixelSetValue(0, 128, 0, 0, true);
-    } else {
-        if (ROS_running) {
-            // Green, if ROS is running
-            p.neoPixelSetValue(0, 0, 255, 0, true);
-        } else {
-            // Yellow, if it's not running
-            p.neoPixelSetValue(0, 255, 50, 0, true);
-        }
-    }
-}
-
 void loop() {
     packetSerial.update();
-    UISerial.update();
     imu_loop();
     updateChargingEnabled();
     updateEmergency();
 
     unsigned long now = millis();
-    if (now - last_imu_millis > IMU_CYCLETIME) {
+    if (now - last_imu_ms > IMU_CYCLETIME_MS) {
         // we have to copy to the temp data structure due to alignment issues
-        imu_read(imu_temp, imu_temp + 3, imu_temp + 6);
-        imu_message.acceleration_mss[0] = imu_temp[0];
-        imu_message.acceleration_mss[1] = imu_temp[1];
-        imu_message.acceleration_mss[2] = imu_temp[2];
-        imu_message.gyro_rads[0] = imu_temp[3];
-        imu_message.gyro_rads[1] = imu_temp[4];
-        imu_message.gyro_rads[2] = imu_temp[5];
-        imu_message.mag_uT[0] = imu_temp[6];
-        imu_message.mag_uT[1] = imu_temp[7];
-        imu_message.mag_uT[2] = imu_temp[8];
+        if(imu_read(imu_temp, imu_temp + 3, imu_temp + 6)) {
+            last_imu_ms = now;
+            imu_message.acceleration_mss[0] = imu_temp[0];
+            imu_message.acceleration_mss[1] = imu_temp[1];
+            imu_message.acceleration_mss[2] = imu_temp[2];
+            imu_message.gyro_rads[0] = imu_temp[3];
+            imu_message.gyro_rads[1] = imu_temp[4];
+            imu_message.gyro_rads[2] = imu_temp[5];
+            imu_message.mag_uT[0] = imu_temp[6];
+            imu_message.mag_uT[1] = imu_temp[7];
+            imu_message.mag_uT[2] = imu_temp[8];
+        }
 
-        imu_message.dt_millis = now - last_imu_millis;
+        imu_message.dt_millis = now - last_imu_ms;
         sendMessage(&imu_message, sizeof(struct ll_imu));
-
-        last_imu_millis = now;
     }
 
-    if (now - last_status_update_millis > STATUS_CYCLETIME) {
-        updateNeopixel();
-
+    if (now - last_status_update_ms > STATUS_CYCLETIME_MS) {
         status_message.v_battery =
                 (float) analogRead(PIN_ANALOG_BATTERY_VOLTAGE) * (3.3f / 4096.0f) * ((VIN_R1 + VIN_R2) / VIN_R2);
         status_message.v_charge =
@@ -650,9 +555,6 @@ void loop() {
         status_message.status_bitmask &= ~(1 << STATUS_CHARGING_ALLOWED_BIT);
         status_message.status_bitmask |= (charging_allowed & 0b1) << STATUS_CHARGING_ALLOWED_BIT;
 
-        status_message.status_bitmask &= ~(1 << STATUS_SOUND_AVAILABLE_BIT);
-        status_message.status_bitmask |= (sound_available & 0b1) << STATUS_SOUND_AVAILABLE_BIT;
-
         // calculate percent value accu filling
         float delta = BATT_FULL - BATT_EMPTY;
         float vo = status_message.v_battery - BATT_EMPTY;
@@ -664,9 +566,9 @@ void loop() {
         sendMessage(&status_message, sizeof(struct ll_status));
         mutex_exit(&mtx_status_message);
 
-        last_status_update_millis = now;
+        last_status_update_ms = now;
 #ifdef USB_DEBUG
-        DEBUG_SERIAL.print("status: 0b");
+        /*DEBUG_SERIAL.print("status: 0b");
         DEBUG_SERIAL.print(status_message.status_bitmask, BIN);
         DEBUG_SERIAL.print("\t");
 
@@ -695,35 +597,26 @@ void loop() {
         DEBUG_SERIAL.print(imu_message.gyro_rads[1], 2);
         DEBUG_SERIAL.print("\tz");
         DEBUG_SERIAL.print(imu_message.gyro_rads[2], 2);
-        DEBUG_SERIAL.println();
+        DEBUG_SERIAL.println();*/
+
+        /*DEBUG_SERIAL.print("USS: ");
+        DEBUG_SERIAL.print(status_message.uss_ranges_m[0], 3);
+        DEBUG_SERIAL.print("\t");
+        DEBUG_SERIAL.print(status_message.uss_ranges_m[1], 3);
+        DEBUG_SERIAL.print("\t");
+        DEBUG_SERIAL.print(status_message.uss_ranges_m[2], 3);
+        DEBUG_SERIAL.print("\t");
+        DEBUG_SERIAL.print(status_message.uss_ranges_m[3], 3);
+        DEBUG_SERIAL.print("\t");
+        DEBUG_SERIAL.print(status_message.uss_ranges_m[4], 3);
+        DEBUG_SERIAL.println();*/
 
 #endif
     }
 
-    if (now - last_UILED_millis > UI_SET_LED_CYCLETIME) {
-        manageUILEDS();
-        last_UILED_millis = now;
-#ifdef ENABLE_SOUND_MODULE
-        if (sound_available) {
-            my_sound.processSounds();
-        }
-#endif
-    }
-
-    // Check UI version/available
-    if (ui_get_version_respond_timeout && now > ui_get_version_respond_timeout)
-    {
-        status_message.status_bitmask &= ~(1 << STATUS_UI_AVAIL_BIT);
-        ui_version = 0;
-        ui_get_version_respond_timeout = 0;
-    }
-    if (now > ui_get_version_next_millis)
-    {
-        ui_get_version_next_millis = now + UI_GET_VERSION_CYCLETIME;
-        ui_get_version_respond_timeout = now + UI_GET_VERSION_TIMEOUT;
-        struct msg_get_version msg;
-        msg.type = Get_Version;
-        sendUIMessage(&msg, sizeof(msg));
+    if (now - last_display_ms > DISPLAY_CYCLETIME_MS) {
+        updateDisplay(false);
+        last_display_ms = now;
     }
 }
 
@@ -746,17 +639,181 @@ void sendMessage(void *message, size_t size) {
     packetSerial.send((uint8_t *) message, size);
 }
 
-void sendUIMessage(void *message, size_t size) {
-    // packages need to be at least 1 byte of type, 1 byte of data and 2 bytes of CRC
-    if (size < 4) {
-        return;
+void updateBlink(char *message, uint8_t *blinkState, int size,int currentBlinkCounter) {
+    for(int i=0;i<size;i++){
+        if(currentBlinkCounter & blinkState[i]) {
+            message[i] = ' ';
+        }
     }
-    uint8_t *data_pointer = (uint8_t *) message;
-
-    // calculate the CRC
-    uint16_t crc = CRC16.ccitt((uint8_t *) message, size - 2);
-    data_pointer[size - 1] = (crc >> 8) & 0xFF;
-    data_pointer[size - 2] = crc & 0xFF;
-
-    UISerial.send((uint8_t *) message, size);
 }
+
+void updateDisplay(bool forceDisplay) {
+    long now = millis();
+
+    displayUpdateCounter++;
+    if(displayUpdateCounter & DISPLAY_BLINK_CYCLE) {
+        displayUpdateCounter = 0;
+    }                                         
+
+    ll_display_emerg[0]         = status_message.emergency_bitmask & (1<<EMERGENCY_BATTERY_EMPTY_BIT) ? 'V' : '0';
+    ll_display_emerg[1]         = status_message.emergency_bitmask & (1<<EMERGENCY_IMU_BIT) ? 'I' : '0';
+    ll_display_emerg[2]         = status_message.emergency_bitmask & (1<<EMERGENCY_USS_BIT) ? 'U' : '0';
+    ll_display_emerg[3]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT2_BIT) ? 'L' : '0';
+    ll_display_emerg[4]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT1_BIT) ? 'L' : '0';
+    ll_display_emerg[5]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON2_BIT) ? 'B' : '0';
+    ll_display_emerg[6]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON1_BIT) ? 'B' : '0';
+    ll_display_emerg[7]         = status_message.emergency_bitmask & (1<<EMERGENCY_LATCH_BIT) ? 'E' : '0';
+    updateBlink(ll_display_emerg,ll_display_emerg_blink,8,displayUpdateCounter);
+
+    // Show Info Docking LED
+    /*if ((status_message.charging_current > 0.80f) && (status_message.v_charge > 20.0f))
+        setLed(leds_message, LED_CHARGING, LED_blink_fast);
+    else if ((status_message.charging_current <= 0.80f) && (status_message.charging_current >= 0.15f) &&
+             (status_message.v_charge > 20.0f))
+        setLed(leds_message, LED_CHARGING, LED_blink_slow);
+    else if ((status_message.charging_current < 0.15f) && (status_message.v_charge > 20.0f))
+        setLed(leds_message, LED_CHARGING, LED_on);
+    else
+        setLed(leds_message, LED_CHARGING, LED_off);
+    // Show Info Battery state
+    if (status_message.v_battery >= (BATT_EMPTY + 2.0f))
+        setLed(leds_message, LED_BATTERY_LOW, LED_off);
+    else
+        setLed(leds_message, LED_BATTERY_LOW, LED_on);
+    if (status_message.v_charge < 10.0f) // activate only when undocked
+    {
+        // use the first LED row as bargraph
+        setBars7(leds_message, status_message.batt_percentage / 100.0);
+    } else {
+        setBars7(leds_message, 0);
+        setBars4(leds_message, 0);
+    }*/
+
+    //High level group 0-4 (5 symbols)
+    //Communication heartbit status
+    status_line[0]         = 'T';
+    status_line_blink[0] = ROS_running ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
+
+    //GPS status
+    status_line[1]         = now - last_high_level_ms < HIGH_LEVEL_TIMEOUT_MS ? 'G' : 'g';
+    if ( (now - last_high_level_ms) > HIGH_LEVEL_TIMEOUT_MS) { status_line_blink[1]=DISPLAY_SLOW_BLINK; }
+    else if (last_high_level_state.gps_quality < 25) { status_line_blink[1]=DISPLAY_FAST_BLINK; }
+    else if (last_high_level_state.gps_quality < 50) { status_line_blink[1]=DISPLAY_NORM_BLINK; }
+    else if (last_high_level_state.gps_quality < 75) { status_line_blink[1]=DISPLAY_SLOW_BLINK; }
+    else { status_line_blink[1]=DISPLAY_NO_BLINK; }
+
+    //High level mode status
+    if(now - last_high_level_ms < HIGH_LEVEL_TIMEOUT_MS) {
+        uint8_t highLevelMode = last_high_level_state.current_mode & 0b111111;
+        uint8_t highLevelSubMode = (last_high_level_state.current_mode >> 6) & 0b11;
+        switch (highLevelMode) {
+            case HighLevelMode::MODE_IDLE:
+                status_line[2]         = 'I';
+                status_line_blink[2]   = DISPLAY_NO_BLINK;
+                break;
+            case HighLevelMode::MODE_AUTONOMOUS:
+                status_line[2]         = 'A';
+                status_line_blink[2]   = DISPLAY_FAST_BLINK;
+                break;
+            case HighLevelMode::MODE_RECORDING:
+                status_line[2]         = 'R';
+                status_line_blink[2]   = DISPLAY_NO_BLINK;
+                break;
+            default:
+                status_line[2]         = 'N';
+                status_line_blink[2]   = DISPLAY_FAST_BLINK;
+                break;
+        }
+        status_line[3]         = '0'+highLevelSubMode;
+        status_line_blink[3]   = status_line_blink[2];
+    } else {
+        status_line[2]         = 'n';
+        status_line_blink[2]   = DISPLAY_SLOW_BLINK;
+        status_line[3]         = 'n';
+        status_line_blink[3]   = status_line_blink[2];
+    }
+
+    //Emergency group 4-10 (7 symbols)
+    status_line[4]         = status_message.emergency_bitmask & (1<<EMERGENCY_BATTERY_EMPTY_BIT) ? 'V' : ' ';
+    status_line_blink[4]   = DISPLAY_FAST_BLINK;
+    //Stop button(s) pressed after timeout (PIN_EMERGENCY_3 PIN_EMERGENCY_4)
+    status_line[5]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT1_BIT | 1<<EMERGENCY_LIFT2_BIT) ? 'L' : ' ';
+    status_line_blink[5]   = DISPLAY_FAST_BLINK;
+    //Lift/Tilt occurs after timeout (PIN_EMERGENCY_1 PIN_EMERGENCY_2)
+    status_line[6]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON1_BIT | 1<<EMERGENCY_BUTTON2_BIT) ? 'B' : ' ';
+    status_line_blink[6]   = DISPLAY_FAST_BLINK;
+    //Internal or external global emergency
+    status_line[7]         = status_message.emergency_bitmask & (1<<EMERGENCY_LATCH_BIT) ? 'E' : ' ';
+    status_line_blink[7]   = DISPLAY_FAST_BLINK;
+    //Rain sensor
+    status_line[8]         = status_message.status_bitmask & (1<<STATUS_RAIN_BIT) ? 'R' : ' ';
+    status_line_blink[8]   = DISPLAY_FAST_BLINK;
+    //USS timeout
+    status_line[9]         = status_message.emergency_bitmask & (1<<EMERGENCY_USS_BIT) ? 'U' : ' ';
+    status_line_blink[9]   = DISPLAY_FAST_BLINK;
+    //IMU timeout
+    status_line[10]         = status_message.emergency_bitmask & (1<<EMERGENCY_IMU_BIT) ? 'I' : ' ';
+    status_line_blink[10]   = DISPLAY_FAST_BLINK;
+
+    //Output status group 11-12 (2 sybmols)
+    //Power pin
+    status_line[11]        = 'P';
+    status_line_blink[12]        = status_message.status_bitmask & (1<<STATUS_RASPI_POWER_BIT) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
+    //ESC enable
+    status_line[12]        = 'M';
+    status_line_blink[12]        = status_message.status_bitmask & (1<<STATUS_ESC_ENABLED_BIT) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
+    
+    //Charging and battery status 12-15 (4 symbols)
+    status_line[13]        = status_message.status_bitmask & (1<<STATUS_CHARGING_ALLOWED_BIT) ? 'C' : ' ';
+    status_line[14]        = ' ';
+    status_line[15]        = ' ';
+    updateBlink(status_line,status_line_blink,16,displayUpdateCounter);
+
+    snprintf(display_line,17, "%.16s",status_line);
+    display.drawString(0, 0, display_line);
+
+    snprintf(display_line,17, "LL Emer %.8s",ll_display_emerg);
+    display.drawString(0, 2, display_line);
+
+    snprintf(display_line,17, "V %4.1f %4.1f %4.1f",status_message.v_battery,status_message.v_charge,status_message.charging_current);
+    display.drawString(0, 3, display_line);
+
+    snprintf(display_line,17, "X %4.1f %4.1f %4.1f",imu_message.acceleration_mss[0],imu_message.acceleration_mss[1],imu_message.acceleration_mss[2]);
+    display.drawString(0, 4, display_line);
+
+    snprintf(display_line,17, "G %4.1f %4.1f %4.1f",imu_message.gyro_rads[0],imu_message.gyro_rads[1],imu_message.gyro_rads[2]);
+    display.drawString(0, 5, display_line);
+
+    snprintf(display_line,17, "USS %3d %3d %3d",(int)(status_message.uss_ranges_m[0]*100),(int)(status_message.uss_ranges_m[1]*100),(int)(status_message.uss_ranges_m[2]*100));
+    display.drawString(0, 6, display_line);
+
+    snprintf(display_line,17, "USS %3d %3d",(int)(status_message.uss_ranges_m[3]*100),(int)(status_message.uss_ranges_m[4]*100));
+    display.drawString(0, 7, display_line);
+}
+
+/*void onUIPacketReceived(const uint8_t *buffer, size_t size) {
+
+    u_int16_t *crc_pointer = (uint16_t *) (buffer + (size - 2));
+    u_int16_t readcrc = *crc_pointer;
+
+    // check structure size
+    if (size < 4)
+        return;
+
+    // check the CRC
+    uint16_t crc = CRC16.ccitt(buffer, size - 2);
+
+    if (buffer[size - 1] != ((crc >> 8) & 0xFF) ||
+        buffer[size - 2] != (crc & 0xFF))
+        return;
+
+    if (buffer[0] == Get_Button && size == sizeof(struct msg_event_button))
+    {
+        struct msg_event_button *msg = (struct msg_event_button *)buffer;
+        struct ll_ui_event ui_event;
+        ui_event.type = PACKET_ID_LL_UI_EVENT;
+        ui_event.button_id = msg->button_id;
+        ui_event.press_duration = msg->press_duration;
+        sendMessage(&ui_event, sizeof(ui_event));
+    }
+}*/

@@ -35,11 +35,17 @@ enum HighLevelMode {
 #define STATUS_INIT_BIT 0
 #define STATUS_RASPI_POWER_BIT 1
 #define STATUS_CHARGING_ALLOWED_BIT 2
-#define STATUS_UNUSED_BIT 4
+#define STATUS_ESC_ENABLED_BIT 3
 #define STATUS_RAIN_BIT 4
-#define STATUS_SOUND_AVAILABLE_BIT 5
-#define STATUS_SOUND_BUSY_BIT 6
-#define STATUS_UI_AVAIL_BIT 7
+
+#define EMERGENCY_LATCH_BIT 0
+#define EMERGENCY_BUTTON1_BIT 1
+#define EMERGENCY_BUTTON2_BIT 2
+#define EMERGENCY_LIFT1_BIT 3
+#define EMERGENCY_LIFT2_BIT 4
+#define EMERGENCY_USS_BIT 5
+#define EMERGENCY_IMU_BIT 6
+#define EMERGENCY_BATTERY_EMPTY_BIT 7
 
 #pragma pack(push, 1)
 struct ll_status {
@@ -51,12 +57,14 @@ struct ll_status {
     // Bit 2: Charging enabled
     // Bit 3: don't care
     // Bit 4: Rain detected
-    // Bit 5: Sound available
-    // Bit 6: Sound busy
-    // Bit 7: UI Board available
+    // Bit 5: don't care
+    // Bit 6: don't care
+    // Bit 7: don't care
     uint8_t status_bitmask;
     // USS range in m
     float uss_ranges_m[5];
+    // USS measurement age in ms (no more than UINT16_MAX)
+    uint16_t uss_age_ms[5];
     // Emergency bitmask:
     // Bit 0: Emergency latch
     // Bit 1: Emergency 0 active
@@ -114,14 +122,14 @@ struct ll_high_level_state {
 } __attribute__((packed));
 #pragma pack(pop)
 
-#pragma pack(push, 1)
-struct ll_ui_event {
-    // Type of this message. Has to be PACKET_ID_LL_UI_EVENT
-    uint8_t type;
-    uint8_t button_id; 
-    uint8_t press_duration;   // 0 for single press, 1 for long, 2 for very long press
-    uint16_t crc;
-} __attribute__((packed));
-#pragma pack(pop)
-
 #endif
+
+#define DISPLAY_NO_BLINK    0b0000
+#define DISPLAY_FAST_BLINK  0b0001
+#define DISPLAY_NORM_BLINK  0b0010
+#define DISPLAY_SLOW_BLINK  0b0100
+#define DISPLAY_BLINK_CYCLE 0b1000
+
+
+
+
