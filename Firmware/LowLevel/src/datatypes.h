@@ -55,7 +55,7 @@ struct ll_status {
     // Bit 0: Initialized (i.e. setup() was a success). If this is 0, all other bits are meaningless.
     // Bit 1: Raspberry Power
     // Bit 2: Charging enabled
-    // Bit 3: don't care
+    // Bit 3: ESC power enabled
     // Bit 4: Rain detected
     // Bit 5: don't care
     // Bit 6: don't care
@@ -71,6 +71,9 @@ struct ll_status {
     // Bit 2: Emergency 1 active
     // Bit 3: Emergency 2 active
     // Bit 4: Emergency 3 active
+    // Bit 5: Emergency USS tiemout
+    // Bit 6: Emergency IMU tiemout
+    // Bit 7: Battery empty
     uint8_t emergency_bitmask;
     // Charge voltage
     float v_charge;
