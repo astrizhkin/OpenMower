@@ -34,8 +34,8 @@
 
 // Emergency will be engaged, if no heartbeat was received in this time frame.
 #define HEARTBEAT_TIMEOUT_MS 500
-#define HIGH_LEVEL_TIMEOUT_MS 2000
-#define MOTOR_STATUS_TIMEOUT_MS 2000
+#define HIGH_LEVEL_TIMEOUT_MS 5000
+#define MOTOR_STATUS_TIMEOUT_MS 500
 #define IMU_TIMEOUT_MS 200
 
 #define USS_TIMEOUT_MS 1000
@@ -667,13 +667,13 @@ void updateDisplay(bool forceDisplay) {
         displayUpdateCounter = 0;
     }                                         
 
-    ll_display_emerg[0]         = status_message.emergency_bitmask & (1<<EMERGENCY_BATTERY_EMPTY_BIT) ? 'V' : '0';
-    ll_display_emerg[1]         = status_message.emergency_bitmask & (1<<EMERGENCY_IMU_BIT) ? 'I' : '0';
-    ll_display_emerg[2]         = status_message.emergency_bitmask & (1<<EMERGENCY_USS_BIT) ? 'U' : '0';
-    ll_display_emerg[3]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT2_BIT) ? 'L' : '0';
-    ll_display_emerg[4]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT1_BIT) ? 'L' : '0';
-    ll_display_emerg[5]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON2_BIT) ? 'B' : '0';
-    ll_display_emerg[6]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON1_BIT) ? 'B' : '0';
+    ll_display_emerg[0]         = status_message.emergency_bitmask & (1<<EMERGENCY_BATTERY_EMPTY_BIT) ? 'V' : ' ';
+    ll_display_emerg[1]         = status_message.emergency_bitmask & (1<<EMERGENCY_IMU_BIT) ? 'I' : ' ';
+    ll_display_emerg[2]         = status_message.emergency_bitmask & (1<<EMERGENCY_USS_BIT) ? 'U' : ' ';
+    ll_display_emerg[3]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT2_BIT) ? 'L' : ' ';
+    ll_display_emerg[4]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT1_BIT) ? 'L' : ' ';
+    ll_display_emerg[5]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON2_BIT) ? 'B' : ' ';
+    ll_display_emerg[6]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON1_BIT) ? 'B' : ' ';
     ll_display_emerg[7]         = status_message.emergency_bitmask & (1<<EMERGENCY_LATCH_BIT) ? 'E' : '0';
     updateBlink(ll_display_emerg,ll_display_emerg_blink,8,displayUpdateCounter);
 
@@ -789,9 +789,9 @@ void updateDisplay(bool forceDisplay) {
 
     display_motor_status[0]        = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD | 1<<MOTOR_STATUS_BATTERY_L1  | 1<<MOTOR_STATUS_BATTERY_L2) ? 'V' : ' ';
     display_motor_status_blink[0]  = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD) ? DISPLAY_FAST_BLINK : last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_L1) ? DISPLAY_NORM_BLINK : DISPLAY_SLOW_BLINK;
-    display_motor_status[1]        = last_motor_state.status[0] & (1<<MOTOR_STATUS_GEN_TIMEOUT) ? 'G' : last_motor_state.status[0] & (1<<MOTOR_STATUS_ADC_TIMEOUT) ? 'A' : 'G';
+    display_motor_status[1]        = last_motor_state.status[0] & (1<<MOTOR_STATUS_GEN_TIMEOUT) ? 'G' : last_motor_state.status[0] & (1<<MOTOR_STATUS_ADC_TIMEOUT) ? 'A' : ' ';
     display_motor_status_blink[1]  = last_motor_state.status[0] & (1<<MOTOR_STATUS_GEN_TIMEOUT | 1<<MOTOR_STATUS_ADC_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
-    display_motor_status[2]       = 'C';
+    display_motor_status[2]       = 'C';//connected
     display_motor_status_blink[2] = last_motor_state.status[0] & (1<<MOTOR_STATUS_CONN_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
     display_motor_status[3]       = last_motor_state.status[0] & (1<<MOTOR_STATUS_PCB_TEMP_ERR | 1<<MOTOR_STATUS_PCB_TEMP_WARN) ? 'T' : ' ';
     display_motor_status_blink[3] = last_motor_state.status[0] & (1<<MOTOR_STATUS_PCB_TEMP_ERR) ? DISPLAY_FAST_BLINK : DISPLAY_NORM_BLINK;
@@ -799,10 +799,10 @@ void updateDisplay(bool forceDisplay) {
     display_motor_status_blink[4] = last_motor_state.status[0] & (1<<MOTOR_STATUS_RIGHT_MOTOR_ERR) ? DISPLAY_FAST_BLINK : DISPLAY_NORM_BLINK;
     display_motor_status[5]       = last_motor_state.status[0] & (1<<MOTOR_STATUS_LEFT_MOTOR_ERR | 1<<MOTOR_STATUS_LEFT_MOTOR_TEMP_ERR) ? 'L' : ' ';
     display_motor_status_blink[5] = last_motor_state.status[0] & (1<<MOTOR_STATUS_LEFT_MOTOR_ERR) ? DISPLAY_FAST_BLINK : DISPLAY_NORM_BLINK;
-    display_motor_status[6]       = 'C';
-    display_motor_status_blink[6] = last_motor_state.status[0] & (1<<MOTOR_STATUS_CTRL_MODE) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
-    display_motor_status[7]       = 'E';
-    display_motor_status_blink[7] = last_motor_state.status[0] & (1<<MOTOR_STATUS_ENABLED) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
+    display_motor_status[6]       = last_motor_state.status[0] & (1<<MOTOR_STATUS_BAD_CTRL_MODE) ? 'C' : ' ';
+    display_motor_status_blink[6] = last_motor_state.status[0] & (1<<MOTOR_STATUS_BAD_CTRL_MODE) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
+    display_motor_status[7]       = 'D';//drive on/disabled blink
+    display_motor_status_blink[7] = last_motor_state.status[0] & (1<<MOTOR_STATUS_DISABLED) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
     if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[0]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
         if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
             memcpy(display_motor_status," NO DATA",8);
@@ -811,10 +811,10 @@ void updateDisplay(bool forceDisplay) {
     }
     updateBlink(display_motor_status,display_motor_status_blink,8,displayUpdateCounter);
 
-    snprintf(display_line,17, "HR Emer %.8s",display_motor_status);
+    snprintf(display_line,17, "Rear    %.8s",display_motor_status);
     display.drawString(0, 1, display_line);
 
-    snprintf(display_line,17, "LL Emer %.8s",ll_display_emerg);
+    snprintf(display_line,17, "Main    %.8s",ll_display_emerg);
     display.drawString(0, 2, display_line);
 
     snprintf(display_line,17, "V %4.1f %4.1f %4.1f",status_message.v_battery,status_message.v_charge,status_message.charging_current);
