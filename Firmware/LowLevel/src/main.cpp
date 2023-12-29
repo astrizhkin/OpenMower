@@ -34,7 +34,8 @@
 
 // Emergency will be engaged, if no heartbeat was received in this time frame.
 #define HEARTBEAT_TIMEOUT_MS 500
-#define HIGH_LEVEL_TIMEOUT_MS 5000
+#define HIGH_LEVEL_TIMEOUT_MS 2000
+#define MOTOR_STATUS_TIMEOUT_MS 2000
 #define IMU_TIMEOUT_MS 200
 
 #define USS_TIMEOUT_MS 1000
@@ -78,6 +79,7 @@ unsigned long last_imu_ms = 0;
 unsigned long last_status_update_ms = 0;
 unsigned long last_heartbeat_ms = 0;
 unsigned long last_high_level_ms = 0;
+unsigned long last_motor_ms = 0;
 unsigned long last_display_ms = 0;
 
 unsigned long lift_emergency_started_ms = 0;
@@ -89,6 +91,7 @@ struct ll_imu imu_message = {0};
 struct ll_status status_message = {0};
 // current high level state
 struct ll_high_level_state last_high_level_state = {0};
+struct ll_motor_state last_motor_state = {0};
 
 // A mutex which is used by core1 each time status_message is modified.
 // We can lock it during message transmission to prevent core1 to modify data in this time.
@@ -104,9 +107,14 @@ float imu_temp[9];
 //display status messages
 char    status_line[16+1];
 uint8_t status_line_blink[16];
+
+char    display_motor_status[8+1];
+uint8_t display_motor_status_blink[8];
+
 char    ll_display_emerg[8+1]; //8 bit chars or char enchoded messages
 uint8_t ll_display_emerg_blink[8];
 uint8_t displayUpdateCounter = 0;
+//temp buffer
 char    display_line[16+1]; //16 chars
 
 
@@ -485,6 +493,10 @@ void onPacketReceived(const uint8_t *buffer, size_t size) {
         // copy the state
         last_high_level_state = *((struct ll_high_level_state *) buffer);
         last_high_level_ms = millis();
+    } else if (buffer[0] == PACKET_ID_LL_MOTOR_STATE && size == sizeof(struct ll_motor_state)) {
+        // copy the state
+        last_motor_state = *((struct ll_motor_state *) buffer);
+        last_motor_ms = millis();
     }
 }
 
@@ -771,6 +783,33 @@ void updateDisplay(bool forceDisplay) {
 
     snprintf(display_line,17, "%.16s",status_line);
     display.drawString(0, 0, display_line);
+
+    //snprintf(display_line,17, "LL Emer %.8s",ll_display_emerg);
+    //display.drawString(0, 2, display_line);
+
+    display_motor_status[0]        = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD | 1<<MOTOR_STATUS_BATTERY_L1  | 1<<MOTOR_STATUS_BATTERY_L2) ? 'V' : ' ';
+    display_motor_status_blink[0]  = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD) ? DISPLAY_FAST_BLINK : last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_L1) ? DISPLAY_NORM_BLINK : DISPLAY_SLOW_BLINK;
+    display_motor_status[1]        = last_motor_state.status[0] & (1<<MOTOR_STATUS_GEN_TIMEOUT) ? 'G' : last_motor_state.status[0] & (1<<MOTOR_STATUS_ADC_TIMEOUT) ? 'A' : 'G';
+    display_motor_status_blink[1]  = last_motor_state.status[0] & (1<<MOTOR_STATUS_GEN_TIMEOUT | 1<<MOTOR_STATUS_ADC_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
+    display_motor_status[2]       = 'C';
+    display_motor_status_blink[2] = last_motor_state.status[0] & (1<<MOTOR_STATUS_CONN_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
+    display_motor_status[3]       = last_motor_state.status[0] & (1<<MOTOR_STATUS_PCB_TEMP_ERR | 1<<MOTOR_STATUS_PCB_TEMP_WARN) ? 'T' : ' ';
+    display_motor_status_blink[3] = last_motor_state.status[0] & (1<<MOTOR_STATUS_PCB_TEMP_ERR) ? DISPLAY_FAST_BLINK : DISPLAY_NORM_BLINK;
+    display_motor_status[4]       = last_motor_state.status[0] & (1<<MOTOR_STATUS_RIGHT_MOTOR_ERR | 1<<MOTOR_STATUS_RIGHT_MOTOR_TEMP_ERR) ? 'R' : ' ';
+    display_motor_status_blink[4] = last_motor_state.status[0] & (1<<MOTOR_STATUS_RIGHT_MOTOR_ERR) ? DISPLAY_FAST_BLINK : DISPLAY_NORM_BLINK;
+    display_motor_status[5]       = last_motor_state.status[0] & (1<<MOTOR_STATUS_LEFT_MOTOR_ERR | 1<<MOTOR_STATUS_LEFT_MOTOR_TEMP_ERR) ? 'L' : ' ';
+    display_motor_status_blink[5] = last_motor_state.status[0] & (1<<MOTOR_STATUS_LEFT_MOTOR_ERR) ? DISPLAY_FAST_BLINK : DISPLAY_NORM_BLINK;
+    display_motor_status[6]       = 'C';
+    display_motor_status_blink[6] = last_motor_state.status[0] & (1<<MOTOR_STATUS_CTRL_MODE) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
+    display_motor_status[7]       = 'E';
+    display_motor_status_blink[7] = last_motor_state.status[0] & (1<<MOTOR_STATUS_ENABLED) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
+    if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
+        for(int i=0;i<8;i++) display_motor_status_blink[i]=DISPLAY_SLOW_BLINK;
+    }
+    updateBlink(display_motor_status,display_motor_status_blink,8,displayUpdateCounter);
+
+    snprintf(display_line,17, "HR Emer %.8s",display_motor_status);
+    display.drawString(0, 1, display_line);
 
     snprintf(display_line,17, "LL Emer %.8s",ll_display_emerg);
     display.drawString(0, 2, display_line);

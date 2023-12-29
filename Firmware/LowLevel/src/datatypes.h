@@ -25,6 +25,7 @@
 #define PACKET_ID_LL_UI_EVENT 3
 #define PACKET_ID_LL_HEARTBEAT 0x42
 #define PACKET_ID_LL_HIGH_LEVEL_STATE 0x43
+#define PACKET_ID_LL_MOTOR_STATE 0x44
 
 enum HighLevelMode {
     MODE_IDLE = 1, // ROS connected, idle mode
@@ -46,6 +47,25 @@ enum HighLevelMode {
 #define EMERGENCY_USS_BIT 5
 #define EMERGENCY_IMU_BIT 6
 #define EMERGENCY_BATTERY_EMPTY_BIT 7
+
+// motor status bits
+#define MOTOR_STATUS_ENABLED                0
+#define MOTOR_STATUS_CTRL_MODE              1
+#define MOTOR_STATUS_LEFT_MOTOR_ERR         2
+#define MOTOR_STATUS_RIGHT_MOTOR_ERR        3
+
+#define MOTOR_STATUS_PCB_TEMP_WARN          4
+#define MOTOR_STATUS_PCB_TEMP_ERR           5
+#define MOTOR_STATUS_LEFT_MOTOR_TEMP_ERR    6
+#define MOTOR_STATUS_RIGHT_MOTOR_TEMP_ERR   7
+
+#define MOTOR_STATUS_CONN_TIMEOUT           8
+#define MOTOR_STATUS_ADC_TIMEOUT            9
+#define MOTOR_STATUS_GEN_TIMEOUT            10
+
+#define MOTOR_STATUS_BATTERY_DEAD           12
+#define MOTOR_STATUS_BATTERY_L1             13
+#define MOTOR_STATUS_BATTERY_L2             14
 
 #pragma pack(push, 1)
 struct ll_status {
@@ -121,6 +141,26 @@ struct ll_high_level_state {
     uint8_t type;
     uint8_t current_mode; // see HighLevelMode
     uint8_t gps_quality;   // GPS quality in percent (0-100)
+    uint16_t crc;
+} __attribute__((packed));
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct ll_motor_state {
+    // Type of this message. Has to be PACKET_ID_LL_HIGH_LEVEL_STATE
+    uint8_t type;
+    //uint8_t motor_id;
+
+    //rad/s
+    //float cmd[5];
+    //rad/s
+    //float speed_meas[5];
+    //rad
+    //float wheel_cnt[5];
+    //float curr_meas[5];
+    //float motor_temp[5];
+    //float boardTemp[3];
+    uint16_t status[3]; //See motor status bits
     uint16_t crc;
 } __attribute__((packed));
 #pragma pack(pop)
