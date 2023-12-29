@@ -803,7 +803,7 @@ void updateDisplay(bool forceDisplay) {
     display_motor_status_blink[6] = last_motor_state.status[0] & (1<<MOTOR_STATUS_CTRL_MODE) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
     display_motor_status[7]       = 'E';
     display_motor_status_blink[7] = last_motor_state.status[0] & (1<<MOTOR_STATUS_ENABLED) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
-    if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_ms[0] > MOTOR_STATUS_TIMEOUT_MS) {
+    if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[0]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
         if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
             memcpy(display_motor_status," NO DATA",8);
         }
