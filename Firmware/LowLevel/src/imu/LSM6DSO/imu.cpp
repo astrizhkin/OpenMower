@@ -2,29 +2,24 @@
 #include "pins.h"
 #include <LSM6DSOSensor.h>
 
-#ifdef HW_0_12_X
-// Needs software UART because pins were messed up in 0.12
-#include <PioSPI.h>
-PioSPI spiBus(PIN_IMU_MOSI, PIN_IMU_MISO, PIN_IMU_SCK, PIN_IMU_CS, SPI_MODE3, 1000000);
-#else
 #include <SPI.h>
 #define spiBus SPI
-#endif
+// Needs software UART because pins were messed up in 0.12
+//#include <PioSPI.h>
+//PioSPI spiBus(PIN_IMU_MOSI, PIN_IMU_MISO, PIN_IMU_SCK, PIN_IMU_CS, SPI_MODE3, 1000000);
 
 LSM6DSOSensor IMU(&spiBus, PIN_IMU_CS, 1000000);
 int32_t accelerometer[3];
 int32_t gyroscope[3];
 
 bool init_imu(Stream* serial) {
-#ifdef HW_0_12_X
-  spiBus.begin();
-#else
   spiBus.setCS(PIN_IMU_CS);
   spiBus.setTX(PIN_IMU_TX);
   spiBus.setRX(PIN_IMU_RX);
   spiBus.setSCK(PIN_IMU_SCK);
   spiBus.begin();
-#endif
+  //software variant
+  //spiBus.begin();
 
     int status = IMU.begin();
     if(status != 0) {
@@ -42,7 +37,7 @@ bool init_imu(Stream* serial) {
 
     uint8_t WHOAMI = 0;
     IMU.ReadID(&WHOAMI);
-    if(WHOAMI != 0b01101010 || WHOAMI != 0b01101100) {
+    if(WHOAMI != 0b01101010 && WHOAMI != 0b01101100) {
         if(serial) {
             serial->print("IMU initialization WHOAMI ");
             serial->print(WHOAMI, BIN);
@@ -51,11 +46,19 @@ bool init_imu(Stream* serial) {
         return false;
     }
 
-    if (IMU.Enable_G() != 0)
+    if (IMU.Enable_G() != 0) {
+        if(serial) {
+            serial->println("IMU enable G failed");
+        }
         return false;
+    }
 
-    if (IMU.Enable_X() != 0)
+    if (IMU.Enable_X() != 0) {
+        if(serial) {
+            serial->println("IMU enable X failed");
+        }
         return false;
+    }
     return true;
 }
 
