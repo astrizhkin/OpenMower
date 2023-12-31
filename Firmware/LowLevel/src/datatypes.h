@@ -38,15 +38,15 @@ enum HighLevelMode {
 #define STATUS_CHARGING_ALLOWED_BIT 2
 #define STATUS_ESC_ENABLED_BIT 3
 #define STATUS_RAIN_BIT 4
+#define STATUS_USS_BIT 5
+#define STATUS_IMU_BIT 6
+#define STATUS_BATTERY_EMPTY_BIT 7
 
 #define EMERGENCY_LATCH_BIT 0
 #define EMERGENCY_BUTTON1_BIT 1
 #define EMERGENCY_BUTTON2_BIT 2
 #define EMERGENCY_LIFT1_BIT 3
 #define EMERGENCY_LIFT2_BIT 4
-#define EMERGENCY_USS_BIT 5
-#define EMERGENCY_IMU_BIT 6
-#define EMERGENCY_BATTERY_EMPTY_BIT 7
 
 // motor status bits
 #define MOTOR_STATUS_DISABLED               0
@@ -66,6 +66,26 @@ enum HighLevelMode {
 #define MOTOR_STATUS_BATTERY_DEAD           12
 #define MOTOR_STATUS_BATTERY_L1             13
 #define MOTOR_STATUS_BATTERY_L2             14
+
+// ############################### BATTERY ###############################
+/* Battery voltage calibration: connect power source.
+ * see How to calibrate.
+ * Write debug output value nr 5 to BAT_CALIB_ADC. make and flash firmware.
+ * Then you can verify voltage on debug output value 6 (to get calibrated voltage multiplied by 100).
+*/
+#define BAT_FILT_COEF           655       // battery voltage filter coefficient in fixed-point. coef_fixedPoint = coef_floatingPoint * 2^16. In this case 655 = 0.01 * 2^16
+#define BAT_CALIB_REAL_VOLTAGE  3970      // input voltage measured by multimeter (multiplied by 100). In this case 43.00 V * 100 = 4300
+#define BAT_CALIB_ADC           1492      // adc-value measured by mainboard (value nr 5 on UART debug output)
+#define BAT_CELLS               10        // battery number of cells. Normal Hoverboard battery: 10s
+#define BAT_FULL_CHARGE         (410 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // Full at charge
+#define BAT_FULL                (405 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // Full
+#define BAT_LVL5                (390 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // ok
+#define BAT_LVL4                (380 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // ok
+#define BAT_LVL3                (370 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // warning 1
+#define BAT_LVL2                (360 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // warning 2
+#define BAT_LVL1                (350 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // almost empty. Charge now! [V*100/cell]. In this case 3.50 V/cell
+#define BAT_DEAD                (337 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // empty
+// ######################## END OF BATTERY ###############################
 
 #pragma pack(push, 1)
 struct ll_status {

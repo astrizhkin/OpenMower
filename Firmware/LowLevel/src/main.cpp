@@ -18,6 +18,7 @@
 #include <FastCRC.h>
 #include <PacketSerial.h>
 #include "datatypes.h"
+#include "defines.h"
 #include "pins.h"
 #include "imu.h"
 #include <U8x8lib.h>
@@ -66,12 +67,6 @@
 #define R_SHUNT 0.003f
 #define CURRENT_SENSE_GAIN 100.0f
 
-#define BATT_ABS_MAX 28.7f
-#define BATT_ABS_Min 21.7f
-
-#define BATT_FULL BATT_ABS_MAX - 0.3f
-#define BATT_EMPTY BATT_ABS_Min + 0.3f
-
 PacketSerial packetSerial; // COBS communication PICO <> Raspi
 FastCRC16 CRC16;
 
@@ -111,8 +106,8 @@ uint8_t status_line_blink[16];
 char    display_motor_status[8+1];
 uint8_t display_motor_status_blink[8];
 
-char    ll_display_emerg[8+1]; //8 bit chars or char enchoded messages
-uint8_t ll_display_emerg_blink[8];
+//char    ll_display_emerg[8+1]; //8 bit chars or char enchoded messages
+//uint8_t ll_display_emerg_blink[8];
 uint8_t displayUpdateCounter = 0;
 //temp buffer
 char    display_line[16+1]; //16 chars
@@ -120,6 +115,9 @@ char    display_line[16+1]; //16 chars
 
 unsigned long last_uss_sensor_result_ms[USS_COUNT];
 unsigned long last_uss_trigger=0;
+
+int16_t        batVoltage       = (400 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE;
+static int32_t batVoltageFixdt  = (400 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE << 16;  // Fixed-point filter output initialized at 400 V*100/cell = 4 V/cell converted to fixed-point
 
 #define DISPLAY_WIRE Wire
 U8X8_SSD1309_128X64_NONAME0_HW_I2C display(U8X8_PIN_NONE);
@@ -221,18 +219,6 @@ void updateEmergency() {
             emergency_state |= 1<<EMERGENCY_BUTTON2_BIT;
     }
 
-    // Check USS timouts
-    for(int i=0;i<USS_COUNT;i++) {
-        if( (USS_ENABLED & (1<<i)) && (status_message.uss_age_ms[i] > USS_TIMEOUT_MS)) {
-            emergency_state |= 1<<EMERGENCY_USS_BIT;
-        }
-    }
-
-    // Check IMU temeout
-    if( now - last_imu_ms > IMU_TIMEOUT_MS ) {
-        emergency_state |= 1<<EMERGENCY_IMU_BIT;
-    }
-
     //ESC must be enabled 
     setEscEnable(emergency_state==0 && ROS_running);
 
@@ -251,6 +237,19 @@ void updateEmergency() {
         updateDisplay(true);
     }
 }
+
+/*double kalman(double U){
+  static const double R = 40;
+  static const double H = 1.00;
+  static double Q = 10;
+  static double P = 0;
+  static double U_hat = 0;
+  static double K = 0;
+  K = P*H/(H*P*H+R);
+  U_hat += + K*(U-H*U_hat);
+  P = (1-K*H)*P+Q;
+  return U_hat;
+}*/
 
 void setup1() {
     // Core
@@ -288,6 +287,7 @@ void loop1() {
             digitalWrite(PIN_MUX_OUT, LOW);
             duration = pulseIn(PIN_MUX_IN, HIGH,USS_ECHO_TIMEOUT_US); // 35000UL for full cycle, Reads the echoPin, returns the sound wave travel time in microseconds
             distance = duration*0.343/2;//0.343mm per 1 microsecond
+            //distance = kalman(distance);
             /*if(distance < 2000) {
                 distance = 0;
             }*/
@@ -527,6 +527,30 @@ void updateChargingEnabled() {
     }
 }
 
+/* =========================== Filtering Functions =========================== */
+
+  /* Low pass filter fixed-point 32 bits: fixdt(1,32,16)
+  * Max:  32767.99998474121
+  * Min: -32768
+  * Res:  1.52587890625e-05
+  * 
+  * Inputs:       u     = int16 or int32
+  * Outputs:      y     = fixdt(1,32,16)
+  * Parameters:   coef  = fixdt(0,16,16) = [0,65535U]
+  * 
+  * Example: 
+  * If coef = 0.8 (in floating point), then coef = 0.8 * 2^16 = 52429 (in fixed-point)
+  * filtLowPass16(u, 52429, &y);
+  * yint = (int16_t)(y >> 16); // the integer output is the fixed-point ouput shifted by 16 bits
+  */
+void filtLowPass32(int32_t u, uint16_t coef, int32_t *y) {
+  int64_t tmp;  
+  tmp = ((int64_t)((u << 4) - (*y >> 12)) * coef) >> 4;
+  tmp = CLAMP(tmp, -2147483648LL, 2147483647LL);  // Overflow protection: 2147483647LL = 2^31 - 1
+  *y = (int32_t)tmp + (*y);
+}
+
+
 void loop() {
     packetSerial.update();
     imu_loop();
@@ -554,8 +578,13 @@ void loop() {
     }
 
     if (now - last_status_update_ms > STATUS_CYCLETIME_MS) {
-        status_message.v_battery =
-                (float) analogRead(PIN_ANALOG_BATTERY_VOLTAGE) * (3.3f / 4096.0f) * ((VIN_R1 + VIN_R2) / VIN_R2);
+        uint16_t raw = analogRead(PIN_ANALOG_BATTERY_VOLTAGE);
+        filtLowPass32(raw, BAT_FILT_COEF, &batVoltageFixdt);
+        batVoltage = (int16_t)(batVoltageFixdt >> 16);  // convert fixed-point to integer
+
+        status_message.v_battery = batVoltage/100.0;
+        // status_message.v_battery = 
+        //         (float) analogRead(PIN_ANALOG_BATTERY_VOLTAGE) * (3.3f / 4096.0f) * ((VIN_R1 + VIN_R2) / VIN_R2);
         status_message.v_charge =
                 (float) analogRead(PIN_ANALOG_CHARGE_VOLTAGE) * (3.3f / 4096.0f) * ((VIN_R1 + VIN_R2) / VIN_R2);
 #ifndef IGNORE_CHARGING_CURRENT
@@ -567,9 +596,26 @@ void loop() {
         status_message.status_bitmask &= ~(1 << STATUS_CHARGING_ALLOWED_BIT);
         status_message.status_bitmask |= (charging_allowed & 0b1) << STATUS_CHARGING_ALLOWED_BIT;
 
+        // Check USS timouts
+        status_message.status_bitmask &= ~(1 << STATUS_USS_BIT);
+        for(int i=0;i<USS_COUNT;i++) {
+            if( (USS_ENABLED & (1<<i)) && (status_message.uss_age_ms[i] > USS_TIMEOUT_MS)) {
+                status_message.status_bitmask |= 1<<STATUS_USS_BIT;
+            }
+        }
+
+        // Check IMU temeout
+        status_message.status_bitmask &= ~(1 << STATUS_IMU_BIT);
+        if( now - last_imu_ms > IMU_TIMEOUT_MS ) {
+            status_message.status_bitmask |= 1<<STATUS_IMU_BIT;
+        }
+
+        // Check battery empty
+        status_message.status_bitmask &= ~(1 << STATUS_BATTERY_EMPTY_BIT);
+
         // calculate percent value accu filling
-        float delta = BATT_FULL - BATT_EMPTY;
-        float vo = status_message.v_battery - BATT_EMPTY;
+        float delta = BAT_FULL - BAT_DEAD;
+        float vo = status_message.v_battery - BAT_DEAD;
         status_message.batt_percentage = vo / delta * 100;
         if (status_message.batt_percentage > 100)
             status_message.batt_percentage = 100;
@@ -667,16 +713,6 @@ void updateDisplay(bool forceDisplay) {
         displayUpdateCounter = 0;
     }                                         
 
-    ll_display_emerg[0]         = status_message.emergency_bitmask & (1<<EMERGENCY_BATTERY_EMPTY_BIT) ? 'V' : ' ';
-    ll_display_emerg[1]         = status_message.emergency_bitmask & (1<<EMERGENCY_IMU_BIT) ? 'I' : ' ';
-    ll_display_emerg[2]         = status_message.emergency_bitmask & (1<<EMERGENCY_USS_BIT) ? 'U' : ' ';
-    ll_display_emerg[3]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT2_BIT) ? 'L' : ' ';
-    ll_display_emerg[4]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT1_BIT) ? 'L' : ' ';
-    ll_display_emerg[5]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON2_BIT) ? 'B' : ' ';
-    ll_display_emerg[6]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON1_BIT) ? 'B' : ' ';
-    ll_display_emerg[7]         = status_message.emergency_bitmask & (1<<EMERGENCY_LATCH_BIT) ? 'E' : '0';
-    updateBlink(ll_display_emerg,ll_display_emerg_blink,8,displayUpdateCounter);
-
     // Show Info Docking LED
     /*if ((status_message.charging_current > 0.80f) && (status_message.v_charge > 20.0f))
         setLed(leds_message, LED_CHARGING, LED_blink_fast);
@@ -746,7 +782,7 @@ void updateDisplay(bool forceDisplay) {
     }
 
     //Emergency group 4-10 (7 symbols)
-    status_line[4]         = status_message.emergency_bitmask & (1<<EMERGENCY_BATTERY_EMPTY_BIT) ? 'V' : ' ';
+    status_line[4]         = status_message.status_bitmask & (1<<STATUS_BATTERY_EMPTY_BIT) ? 'V' : ' ';
     status_line_blink[4]   = DISPLAY_FAST_BLINK;
     //Stop button(s) pressed after timeout (PIN_EMERGENCY_3 PIN_EMERGENCY_4)
     status_line[5]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT1_BIT | 1<<EMERGENCY_LIFT2_BIT) ? 'L' : ' ';
@@ -761,10 +797,10 @@ void updateDisplay(bool forceDisplay) {
     status_line[8]         = status_message.status_bitmask & (1<<STATUS_RAIN_BIT) ? 'R' : ' ';
     status_line_blink[8]   = DISPLAY_FAST_BLINK;
     //USS timeout
-    status_line[9]         = status_message.emergency_bitmask & (1<<EMERGENCY_USS_BIT) ? 'U' : ' ';
+    status_line[9]         = status_message.status_bitmask & (1<<STATUS_USS_BIT) ? 'U' : ' ';
     status_line_blink[9]   = DISPLAY_FAST_BLINK;
     //IMU timeout
-    status_line[10]         = status_message.emergency_bitmask & (1<<EMERGENCY_IMU_BIT) ? 'I' : ' ';
+    status_line[10]         = status_message.status_bitmask & (1<<STATUS_IMU_BIT) ? 'I' : ' ';
     status_line_blink[10]   = DISPLAY_FAST_BLINK;
 
     //Output status group 11-12 (2 sybmols)
@@ -784,9 +820,20 @@ void updateDisplay(bool forceDisplay) {
     snprintf(display_line,17, "%.16s",status_line);
     display.drawString(0, 0, display_line);
 
+    //ll_display_emerg[0]         = ' ';//status_message.emergency_bitmask & (1<<EMERGENCY_BATTERY_EMPTY_BIT) ? 'V' : ' ';
+    //ll_display_emerg[1]         = ' ';//status_message.emergency_bitmask & (1<<EMERGENCY_IMU_BIT) ? 'I' : ' ';
+    //ll_display_emerg[2]         = ' ';//status_message.emergency_bitmask & (1<<EMERGENCY_USS_BIT) ? 'U' : ' ';
+    //ll_display_emerg[3]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT2_BIT) ? 'L' : ' ';
+    //ll_display_emerg[4]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT1_BIT) ? 'L' : ' ';
+    //ll_display_emerg[5]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON2_BIT) ? 'B' : ' ';
+    //ll_display_emerg[6]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON1_BIT) ? 'B' : ' ';
+    //ll_display_emerg[7]         = status_message.emergency_bitmask & (1<<EMERGENCY_LATCH_BIT) ? 'E' : '0';
+    //updateBlink(ll_display_emerg,ll_display_emerg_blink,8,displayUpdateCounter);
+
     //snprintf(display_line,17, "LL Emer %.8s",ll_display_emerg);
     //display.drawString(0, 2, display_line);
 
+    // Rear motor
     display_motor_status[0]        = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD | 1<<MOTOR_STATUS_BATTERY_L1  | 1<<MOTOR_STATUS_BATTERY_L2) ? 'V' : ' ';
     display_motor_status_blink[0]  = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD) ? DISPLAY_FAST_BLINK : last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_L1) ? DISPLAY_NORM_BLINK : DISPLAY_SLOW_BLINK;
     display_motor_status[1]        = last_motor_state.status[0] & (1<<MOTOR_STATUS_GEN_TIMEOUT) ? 'G' : last_motor_state.status[0] & (1<<MOTOR_STATUS_ADC_TIMEOUT) ? 'A' : ' ';
@@ -814,8 +861,36 @@ void updateDisplay(bool forceDisplay) {
     snprintf(display_line,17, "Rear    %.8s",display_motor_status);
     display.drawString(0, 1, display_line);
 
-    snprintf(display_line,17, "Main    %.8s",ll_display_emerg);
+    // Front motor
+    display_motor_status[0]        = last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_DEAD | 1<<MOTOR_STATUS_BATTERY_L1  | 1<<MOTOR_STATUS_BATTERY_L2) ? 'V' : ' ';
+    display_motor_status_blink[0]  = last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_DEAD) ? DISPLAY_FAST_BLINK : last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_L1) ? DISPLAY_NORM_BLINK : DISPLAY_SLOW_BLINK;
+    display_motor_status[1]        = last_motor_state.status[1] & (1<<MOTOR_STATUS_GEN_TIMEOUT) ? 'G' : last_motor_state.status[1] & (1<<MOTOR_STATUS_ADC_TIMEOUT) ? 'A' : ' ';
+    display_motor_status_blink[1]  = last_motor_state.status[1] & (1<<MOTOR_STATUS_GEN_TIMEOUT | 1<<MOTOR_STATUS_ADC_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
+    display_motor_status[2]       = 'C';//connected
+    display_motor_status_blink[2] = last_motor_state.status[1] & (1<<MOTOR_STATUS_CONN_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
+    display_motor_status[3]       = last_motor_state.status[1] & (1<<MOTOR_STATUS_PCB_TEMP_ERR | 1<<MOTOR_STATUS_PCB_TEMP_WARN) ? 'T' : ' ';
+    display_motor_status_blink[3] = last_motor_state.status[1] & (1<<MOTOR_STATUS_PCB_TEMP_ERR) ? DISPLAY_FAST_BLINK : DISPLAY_NORM_BLINK;
+    display_motor_status[4]       = last_motor_state.status[1] & (1<<MOTOR_STATUS_RIGHT_MOTOR_ERR | 1<<MOTOR_STATUS_RIGHT_MOTOR_TEMP_ERR) ? 'R' : ' ';
+    display_motor_status_blink[4] = last_motor_state.status[1] & (1<<MOTOR_STATUS_RIGHT_MOTOR_ERR) ? DISPLAY_FAST_BLINK : DISPLAY_NORM_BLINK;
+    display_motor_status[5]       = last_motor_state.status[1] & (1<<MOTOR_STATUS_LEFT_MOTOR_ERR | 1<<MOTOR_STATUS_LEFT_MOTOR_TEMP_ERR) ? 'L' : ' ';
+    display_motor_status_blink[5] = last_motor_state.status[1] & (1<<MOTOR_STATUS_LEFT_MOTOR_ERR) ? DISPLAY_FAST_BLINK : DISPLAY_NORM_BLINK;
+    display_motor_status[6]       = last_motor_state.status[1] & (1<<MOTOR_STATUS_BAD_CTRL_MODE) ? 'C' : ' ';
+    display_motor_status_blink[6] = last_motor_state.status[1] & (1<<MOTOR_STATUS_BAD_CTRL_MODE) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
+    display_motor_status[7]       = 'D';//drive on/disabled blink
+    display_motor_status_blink[7] = last_motor_state.status[1] & (1<<MOTOR_STATUS_DISABLED) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
+    if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[1]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
+        if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
+            memcpy(display_motor_status," NO DATA",8);
+        }
+        for(int i=0;i<8;i++) display_motor_status_blink[i]=DISPLAY_SLOW_BLINK;
+    }
+    updateBlink(display_motor_status,display_motor_status_blink,8,displayUpdateCounter);
+
+    snprintf(display_line,17, "Front    %.8s",display_motor_status);
     display.drawString(0, 2, display_line);
+
+    //snprintf(display_line,17, "Main    %.8s",ll_display_emerg);
+    //display.drawString(0, 2, display_line);
 
     snprintf(display_line,17, "V %4.1f %4.1f %4.1f",status_message.v_battery,status_message.v_charge,status_message.charging_current);
     display.drawString(0, 3, display_line);
