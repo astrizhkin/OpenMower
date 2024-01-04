@@ -77,6 +77,7 @@ enum HighLevelMode {
 #define BAT_CALIB_REAL_VOLTAGE  3970      // input voltage measured by multimeter (multiplied by 100). In this case 43.00 V * 100 = 4300
 #define BAT_CALIB_ADC           1492      // adc-value measured by mainboard (value nr 5 on UART debug output)
 #define BAT_CELLS               10        // battery number of cells. Normal Hoverboard battery: 10s
+#define BAT_CHARGER_MAX         (430 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // Charger limit???
 #define BAT_FULL_CHARGE         (410 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // Full at charge
 #define BAT_FULL                (405 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // Full
 #define BAT_LVL5                (390 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // ok

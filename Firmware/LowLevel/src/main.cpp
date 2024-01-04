@@ -156,12 +156,15 @@ void updateEmergency() {
     bool emergency3 = !gpio_get(PIN_EMERGENCY_3);
     bool emergency4 = !gpio_get(PIN_EMERGENCY_4);
 
+    /*#ifdef USB_DEBUG
+        DEBUG_SERIAL.printf("Emergency %d %d %d %d\n",emergency1,emergency2,emergency3,emergency4);
+    #endif*/
     now = millis();
     uint8_t emergency_state = 0;
 
-    bool is_tilted = emergency1 || emergency2;
-    bool is_lifted = emergency1 && emergency2;
-    bool stop_pressed = emergency3 || emergency4;
+    bool is_tilted = emergency3 || emergency4;
+    bool is_lifted = emergency3 && emergency4;
+    bool stop_pressed = emergency1 || emergency2;
 
     if (is_lifted) {
         // We just lifted, store the timestamp
@@ -185,10 +188,10 @@ void updateEmergency() {
 
     if (lift_emergency_started_ms > 0 && (now - lift_emergency_started_ms) >= LIFT_EMERGENCY_MS) {
         // Emergency bit 2 (lift wheel 1)set?
-        if (emergency1)
+        if (emergency3)
             emergency_state |= 1<<EMERGENCY_LIFT1_BIT;
         // Emergency bit 1 (lift wheel 2)set?
-        if (emergency2)
+        if (emergency4)
             emergency_state |= 1<<EMERGENCY_LIFT2_BIT;
     }
 
@@ -204,18 +207,18 @@ void updateEmergency() {
 
     if (tilt_emergency_started_ms > 0 && (now - tilt_emergency_started_ms) >= TILT_EMERGENCY_MS) {
         // Emergency bit 2 (lift wheel 1)set?
-        if (emergency1)
+        if (emergency3)
             emergency_state |= 1<<EMERGENCY_LIFT1_BIT;
         // Emergency bit 1 (lift wheel 2)set?
-        if (emergency2)
+        if (emergency4)
             emergency_state |= 1<<EMERGENCY_LIFT2_BIT;
     }
     if (button_emergency_started_ms > 0 && (now - button_emergency_started_ms) >= BUTTON_EMERGENCY_MS) {
         // Emergency bit 2 (stop button) set?
-        if (emergency3)
+        if (emergency1)
             emergency_state |= 1<<EMERGENCY_BUTTON1_BIT;
         // Emergency bit 1 (stop button)set?
-        if (emergency4)
+        if (emergency2)
             emergency_state |= 1<<EMERGENCY_BUTTON2_BIT;
     }
 
@@ -502,7 +505,7 @@ void onPacketReceived(const uint8_t *buffer, size_t size) {
 
 // returns true, if it's a good idea to charge the battery (current, voltages, ...)
 bool checkShouldCharge() {
-    return status_message.v_charge < 30.0 && status_message.charging_current < 1.5 && status_message.v_battery < 29.0;
+    return status_message.v_charge < BAT_CHARGER_MAX && status_message.charging_current < 1.5 && status_message.v_battery < BAT_LVL5;
 }
 
 void updateChargingEnabled() {
@@ -798,7 +801,7 @@ void updateDisplay(bool forceDisplay) {
     status_line_blink[8]   = DISPLAY_FAST_BLINK;
     //USS timeout
     status_line[9]         = status_message.status_bitmask & (1<<STATUS_USS_BIT) ? 'U' : ' ';
-    status_line_blink[9]   = DISPLAY_FAST_BLINK;
+    status_line_blink[9]   = DISPLAY_SLOW_BLINK;
     //IMU timeout
     status_line[10]         = status_message.status_bitmask & (1<<STATUS_IMU_BIT) ? 'I' : ' ';
     status_line_blink[10]   = DISPLAY_FAST_BLINK;
@@ -886,7 +889,7 @@ void updateDisplay(bool forceDisplay) {
     }
     updateBlink(display_motor_status,display_motor_status_blink,8,displayUpdateCounter);
 
-    snprintf(display_line,17, "Front    %.8s",display_motor_status);
+    snprintf(display_line,17, "Front   %.8s",display_motor_status);
     display.drawString(0, 2, display_line);
 
     //snprintf(display_line,17, "Main    %.8s",ll_display_emerg);
