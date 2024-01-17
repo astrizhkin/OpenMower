@@ -33,13 +33,13 @@ enum HighLevelMode {
     MODE_RECORDING = 3 // ROS connected, Manual mode during recording etc
 };
 
-#define STATUS_INIT_BIT 0
-#define STATUS_RASPI_POWER_BIT 1
+#define STATUS_INIT_BIT 0 //???
+#define STATUS_RASPI_POWER_BIT 1 //???
 #define STATUS_CHARGING_ALLOWED_BIT 2
 #define STATUS_ESC_ENABLED_BIT 3
 #define STATUS_RAIN_BIT 4
-#define STATUS_USS_BIT 5
-#define STATUS_IMU_BIT 6
+#define STATUS_USS_TIMEOUT_BIT 5
+#define STATUS_IMU_TIMEOUT_BIT 6
 #define STATUS_BATTERY_EMPTY_BIT 7
 
 #define EMERGENCY_LATCH_BIT 0
@@ -50,7 +50,7 @@ enum HighLevelMode {
 
 // motor status bits
 #define MOTOR_STATUS_DISABLED               0
-#define MOTOR_STATUS_BAD_CTRL_MODE              1
+#define MOTOR_STATUS_BAD_CTRL_MODE          1
 #define MOTOR_STATUS_LEFT_MOTOR_ERR         2
 #define MOTOR_STATUS_RIGHT_MOTOR_ERR        3
 
@@ -73,19 +73,57 @@ enum HighLevelMode {
  * Write debug output value nr 5 to BAT_CALIB_ADC. make and flash firmware.
  * Then you can verify voltage on debug output value 6 (to get calibrated voltage multiplied by 100).
 */
-#define BAT_FILT_COEF           655       // battery voltage filter coefficient in fixed-point. coef_fixedPoint = coef_floatingPoint * 2^16. In this case 655 = 0.01 * 2^16
-#define BAT_CALIB_REAL_VOLTAGE  3970      // input voltage measured by multimeter (multiplied by 100). In this case 43.00 V * 100 = 4300
-#define BAT_CALIB_ADC           1492      // adc-value measured by mainboard (value nr 5 on UART debug output)
+//3277 - 5 sec, 655 - 20sec, 65 - 100sec
+#define BAT_FILT_COEF           655       // battery voltage filter coefficient in fixed-point. coef_fixedPoint = coef_floatingPoint * 2^16. In this case 3277 = 0.05 * 2^16. if 0.01 - it converges in 10 sec, if 0.001 it converges in 100sec
+#define BAT_CALIB_REAL_VOLTAGE  4160      // input voltage measured by multimeter (multiplied by 100). In this case 41.60 V * 100 = 4160
+#define BAT_CALIB_ADC           3325      // adc-value measured by mainboard (value nr 5 on UART debug output)
+
 #define BAT_CELLS               10        // battery number of cells. Normal Hoverboard battery: 10s
-#define BAT_CHARGER_MAX         (430 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // Charger limit???
-#define BAT_FULL_CHARGE         (410 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // Full at charge
-#define BAT_FULL                (405 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // Full
-#define BAT_LVL5                (390 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // ok
-#define BAT_LVL4                (380 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // ok
-#define BAT_LVL3                (370 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // warning 1
-#define BAT_LVL2                (360 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // warning 2
-#define BAT_LVL1                (350 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // almost empty. Charge now! [V*100/cell]. In this case 3.50 V/cell
-#define BAT_DEAD                (337 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE    // empty
+#define BAT_LIION                         //battry type BAT_LIION or BAT_LIFEPO4
+
+#ifdef BAT_LIION
+    #define BAT_MAX             (4.25 * BAT_CELLS)    // Max voltage during charge
+    #define BAT_STOP_CHARGE     (4.20 * BAT_CELLS)    // Stop charge
+    #define BAT_FULL1           (4.15 * BAT_CELLS)    // Full right after charge
+    #define BAT_FULL2           (4.10 * BAT_CELLS)    // Full
+    #define BAT_OK1             (4.05 * BAT_CELLS)    // ok
+    #define BAT_OK2             (4.00 * BAT_CELLS)    // ok
+    #define BAT_OK3             (3.90 * BAT_CELLS)    // ok
+    #define BAT_OK4             (3.80 * BAT_CELLS)    // ok
+    #define BAT_WARN1           (3.70 * BAT_CELLS)    // warning 1
+    #define BAT_WARN2           (3.60 * BAT_CELLS)    // warning 2
+    #define BAT_WARN3           (3.50 * BAT_CELLS)    // almost empty. Charge now!
+    #define BAT_EMPTY           (3.37 * BAT_CELLS)    // empty
+#endif
+
+#ifdef BAT_LIFEPO4
+    #define BAT_CHARGER_MAX     (3.75 * BAT_CELLS)    // Charger voltage limit
+    #define BAT_MAX             (3.60 * BAT_CELLS)    // Max voltage during charge
+    #define BAT_STOP_CHARGE     (3.55 * BAT_CELLS)    // Stop charge
+    #define BAT_FULL_CHARGE     (3.50 * BAT_CELLS)    // Full during charge
+    #define BAT_FULL1           (3.45 * BAT_CELLS)    // Full right after charge
+    #define BAT_FULL2           (3.40 * BAT_CELLS)    // Full
+    #define BAT_OK1             (3.35 * BAT_CELLS)    // ok
+    #define BAT_OK2             (3.30 * BAT_CELLS)    // ok
+    #define BAT_OK3             (3.20 * BAT_CELLS)    // ok
+    #define BAT_OK4             (3.10 * BAT_CELLS)    // ok
+    #define BAT_WARN1           (3.00 * BAT_CELLS)    // warning 1
+    #define BAT_WARN2           (2.90 * BAT_CELLS)    // warning 2
+    #define BAT_WARN3           (2.80 * BAT_CELLS)    // almost empty. Charge now!
+    #define BAT_EMPTY           (2.50 * BAT_CELLS)    // empty
+#endif
+
+#define CHARGE_MAX_VOLT         (4.35 * BAT_CELLS)    // Charger max voltage limit
+#define CHARGE_MIN_VOLT         5.0                   // Charger min voltage limit
+
+#define CHARGE_FILT_COEF           6553 //0.1 * 2^16
+#define CHARGE_CALIB_REAL_VOLTAGE  4140
+#define CHARGE_CALIB_ADC           3382
+
+#define CURRENT_FILT_COEF           3277 //0.1 * 2^16
+#define CURRENT_CALIB_REAL_CURRENT  110
+#define CURRENT_CALIB_ADC           275
+
 // ######################## END OF BATTERY ###############################
 
 #pragma pack(push, 1)

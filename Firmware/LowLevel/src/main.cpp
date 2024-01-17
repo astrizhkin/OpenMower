@@ -21,6 +21,7 @@
 #include "defines.h"
 #include "pins.h"
 #include "imu.h"
+#include "font.h"
 #include <U8x8lib.h>
 //#include <U8g2lib.h>
 #include <Wire.h>
@@ -62,10 +63,8 @@
 /**
  * @brief Some hardware parameters
  */
-#define VIN_R1 10000.0f
-#define VIN_R2 1000.0f
 #define R_SHUNT 0.003f
-#define CURRENT_SENSE_GAIN 100.0f
+#define CURRENT_SENSE_GAIN 60.0f
 
 PacketSerial packetSerial; // COBS communication PICO <> Raspi
 FastCRC16 CRC16;
@@ -115,9 +114,9 @@ char    display_line[16+1]; //16 chars
 
 unsigned long last_uss_sensor_result_ms[USS_COUNT];
 unsigned long last_uss_trigger=0;
-
-int16_t        batVoltage       = (400 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE;
 static int32_t batVoltageFixdt  = (400 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE << 16;  // Fixed-point filter output initialized at 400 V*100/cell = 4 V/cell converted to fixed-point
+static int32_t chargeVoltageFixdt  = (0 * BAT_CELLS * CHARGE_CALIB_ADC) / CHARGE_CALIB_REAL_VOLTAGE << 16;  // Fixed-point filter output initialized at 0V converted to fixed-point
+static int32_t chargeCurrentFixdt  = (0 * CURRENT_CALIB_ADC) / CURRENT_CALIB_REAL_CURRENT << 16;  // Fixed-point filter output initialized at 0 amps converted to fixed-point
 
 #define DISPLAY_WIRE Wire
 U8X8_SSD1309_128X64_NONAME0_HW_I2C display(U8X8_PIN_NONE);
@@ -237,7 +236,7 @@ void updateEmergency() {
         sendMessage(&status_message, sizeof(struct ll_status));
 
         // Update LEDs instantly
-        updateDisplay(true);
+        // updateDisplay(true);
     }
 }
 
@@ -382,8 +381,8 @@ void setup() {
 #ifdef USB_DEBUG
     DEBUG_SERIAL.println("Load font");
 #endif
-    //display.setFont(u8x8_font_artossans8_r);//capital A - 7
-    display.setFont(u8x8_font_chroma48medium8_r);//capital A - 6
+    display.setFont(u8x8_font_chroma48medium8_r);
+    //display.setFont(mowerfont);//capital A - 6
    
     display.drawString(0,0,"Mover v0.1");
     delay(100);
@@ -504,13 +503,24 @@ void onPacketReceived(const uint8_t *buffer, size_t size) {
 }
 
 // returns true, if it's a good idea to charge the battery (current, voltages, ...)
-bool checkShouldCharge() {
-    return status_message.v_charge < BAT_CHARGER_MAX && status_message.charging_current < 1.5 && status_message.v_battery < BAT_LVL5;
+bool checkShouldStartCharge() {
+    return status_message.v_battery < status_message.v_charge
+        && status_message.v_charge < CHARGE_MAX_VOLT 
+        && status_message.v_charge > CHARGE_MIN_VOLT 
+        && status_message.v_battery < BAT_OK1;
+}
+
+bool checkShouldStopCharge() {
+    return status_message.v_battery > status_message.v_charge
+        || status_message.v_charge > CHARGE_MAX_VOLT 
+        || status_message.v_charge < CHARGE_MIN_VOLT 
+        //|| status_message.charging_current < 0.5
+        || status_message.v_battery > BAT_STOP_CHARGE;
 }
 
 void updateChargingEnabled() {
     if (charging_allowed) {
-        if (!checkShouldCharge()) {
+        if (checkShouldStopCharge()) {
             digitalWrite(PIN_ENABLE_CHARGE, LOW);
             charging_allowed = false;
             charging_disabled_time = millis();
@@ -518,13 +528,13 @@ void updateChargingEnabled() {
     } else {
         // enable charging after CHARGING_RETRY_MILLIS
         if (millis() - charging_disabled_time > CHARGING_RETRY_MS) {
-            if (!checkShouldCharge()) {
+            if (checkShouldStartCharge()) {
+                digitalWrite(PIN_ENABLE_CHARGE, HIGH);
+                charging_allowed = true;
+            } else {
                 digitalWrite(PIN_ENABLE_CHARGE, LOW);
                 charging_allowed = false;
                 charging_disabled_time = millis();
-            } else {
-                digitalWrite(PIN_ENABLE_CHARGE, HIGH);
-                charging_allowed = true;
             }
         }
     }
@@ -579,46 +589,51 @@ void loop() {
         imu_message.dt_millis = now - last_imu_ms;
         sendMessage(&imu_message, sizeof(struct ll_imu));
     }
-
+                
     if (now - last_status_update_ms > STATUS_CYCLETIME_MS) {
         uint16_t raw = analogRead(PIN_ANALOG_BATTERY_VOLTAGE);
         filtLowPass32(raw, BAT_FILT_COEF, &batVoltageFixdt);
-        batVoltage = (int16_t)(batVoltageFixdt >> 16);  // convert fixed-point to integer
-
-        status_message.v_battery = batVoltage/100.0;
+        status_message.v_battery = (float)(batVoltageFixdt >> 16) * BAT_CALIB_REAL_VOLTAGE / (BAT_CALIB_ADC * 100.0);
         // status_message.v_battery = 
         //         (float) analogRead(PIN_ANALOG_BATTERY_VOLTAGE) * (3.3f / 4096.0f) * ((VIN_R1 + VIN_R2) / VIN_R2);
-        status_message.v_charge =
-                (float) analogRead(PIN_ANALOG_CHARGE_VOLTAGE) * (3.3f / 4096.0f) * ((VIN_R1 + VIN_R2) / VIN_R2);
-#ifndef IGNORE_CHARGING_CURRENT
-        status_message.charging_current =
-                (float) analogRead(PIN_ANALOG_CHARGE_CURRENT) * (3.3f / 4096.0f) / (CURRENT_SENSE_GAIN * R_SHUNT);
-#else
-        status_message.charging_current = -1.0f;
-#endif
+        raw = analogRead(PIN_ANALOG_CHARGE_VOLTAGE);
+        filtLowPass32(raw, CHARGE_FILT_COEF, &chargeVoltageFixdt);
+        status_message.v_charge = (float)(chargeVoltageFixdt >> 16) * CHARGE_CALIB_REAL_VOLTAGE / (CHARGE_CALIB_ADC * 100.0);
+
+        if(status_message.v_charge > CHARGE_MIN_VOLT) { //charger powers current sensor. no reason to read unpowered sensor
+            raw = analogRead(PIN_ANALOG_CHARGE_CURRENT);
+            filtLowPass32(raw, CURRENT_FILT_COEF, &chargeCurrentFixdt);
+            status_message.charging_current = (float)(chargeCurrentFixdt >> 16) * CURRENT_CALIB_REAL_CURRENT / (CURRENT_CALIB_ADC * 100.0);
+        } else {
+            status_message.charging_current = -0.2;
+        }
+
         status_message.status_bitmask &= ~(1 << STATUS_CHARGING_ALLOWED_BIT);
         status_message.status_bitmask |= (charging_allowed & 0b1) << STATUS_CHARGING_ALLOWED_BIT;
 
         // Check USS timouts
-        status_message.status_bitmask &= ~(1 << STATUS_USS_BIT);
+        status_message.status_bitmask &= ~(1 << STATUS_USS_TIMEOUT_BIT);
         for(int i=0;i<USS_COUNT;i++) {
             if( (USS_ENABLED & (1<<i)) && (status_message.uss_age_ms[i] > USS_TIMEOUT_MS)) {
-                status_message.status_bitmask |= 1<<STATUS_USS_BIT;
+                status_message.status_bitmask |= 1<<STATUS_USS_TIMEOUT_BIT;
             }
         }
 
         // Check IMU temeout
-        status_message.status_bitmask &= ~(1 << STATUS_IMU_BIT);
+        status_message.status_bitmask &= ~(1 << STATUS_IMU_TIMEOUT_BIT);
         if( now - last_imu_ms > IMU_TIMEOUT_MS ) {
-            status_message.status_bitmask |= 1<<STATUS_IMU_BIT;
+            status_message.status_bitmask |= 1<<STATUS_IMU_TIMEOUT_BIT;
         }
 
         // Check battery empty
         status_message.status_bitmask &= ~(1 << STATUS_BATTERY_EMPTY_BIT);
+        if (status_message.v_battery < BAT_EMPTY) {
+            status_message.status_bitmask |= 1<<STATUS_BATTERY_EMPTY_BIT;
+        }
 
         // calculate percent value accu filling
-        float delta = BAT_FULL - BAT_DEAD;
-        float vo = status_message.v_battery - BAT_DEAD;
+        float delta = BAT_FULL1 - BAT_EMPTY;
+        float vo = status_message.v_battery - BAT_EMPTY;
         status_message.batt_percentage = vo / delta * 100;
         if (status_message.batt_percentage > 100)
             status_message.batt_percentage = 100;
@@ -800,10 +815,10 @@ void updateDisplay(bool forceDisplay) {
     status_line[8]         = status_message.status_bitmask & (1<<STATUS_RAIN_BIT) ? 'R' : ' ';
     status_line_blink[8]   = DISPLAY_FAST_BLINK;
     //USS timeout
-    status_line[9]         = status_message.status_bitmask & (1<<STATUS_USS_BIT) ? 'U' : ' ';
+    status_line[9]         = status_message.status_bitmask & (1<<STATUS_USS_TIMEOUT_BIT) ? 'U' : ' ';
     status_line_blink[9]   = DISPLAY_SLOW_BLINK;
     //IMU timeout
-    status_line[10]         = status_message.status_bitmask & (1<<STATUS_IMU_BIT) ? 'I' : ' ';
+    status_line[10]         = status_message.status_bitmask & (1<<STATUS_IMU_TIMEOUT_BIT) ? 'I' : ' ';
     status_line_blink[10]   = DISPLAY_FAST_BLINK;
 
     //Output status group 11-12 (2 sybmols)
@@ -815,9 +830,10 @@ void updateDisplay(bool forceDisplay) {
     status_line_blink[12]        = status_message.status_bitmask & (1<<STATUS_ESC_ENABLED_BIT) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
     
     //Charging and battery status 12-15 (4 symbols)
+    uint8_t batt_percentage = status_message.batt_percentage >= 100 ? 99 : status_message.batt_percentage < 0 ? 0 : status_message.batt_percentage;
     status_line[13]        = status_message.status_bitmask & (1<<STATUS_CHARGING_ALLOWED_BIT) ? 'C' : ' ';
-    status_line[14]        = ' ';
-    status_line[15]        = ' ';
+    status_line[14]        = '0'+batt_percentage/10;
+    status_line[15]        = '0'+batt_percentage%10;
     updateBlink(status_line,status_line_blink,16,displayUpdateCounter);
 
     snprintf(display_line,17, "%.16s",status_line);
@@ -895,7 +911,7 @@ void updateDisplay(bool forceDisplay) {
     //snprintf(display_line,17, "Main    %.8s",ll_display_emerg);
     //display.drawString(0, 2, display_line);
 
-    snprintf(display_line,17, "V %4.1f %4.1f %4.1f",status_message.v_battery,status_message.v_charge,status_message.charging_current);
+    snprintf(display_line,17, "V %4.1f %4.1f %4.2f",status_message.v_battery,status_message.v_charge,status_message.charging_current);
     display.drawString(0, 3, display_line);
 
     snprintf(display_line,17, "X %4.1f %4.1f %4.1f",imu_message.acceleration_mss[0],imu_message.acceleration_mss[1],imu_message.acceleration_mss[2]);
@@ -904,12 +920,27 @@ void updateDisplay(bool forceDisplay) {
     snprintf(display_line,17, "G %4.1f %4.1f %4.1f",imu_message.gyro_rads[0],imu_message.gyro_rads[1],imu_message.gyro_rads[2]);
     display.drawString(0, 5, display_line);
 
+    //snprintf(display_line,17, "ADC %d %d ",batteryADCRaw,chargerADCRaw);
+    //display.drawString(0, 6, display_line);
+
+    //snprintf(display_line,17, "ADC %d       ",currentADCRaw);
+    //display.drawString(0, 7, display_line);
+
     snprintf(display_line,17, "USS %3d %3d %3d",(int)(status_message.uss_ranges_m[0]*100),(int)(status_message.uss_ranges_m[1]*100),(int)(status_message.uss_ranges_m[2]*100));
     display.drawString(0, 6, display_line);
 
     snprintf(display_line,17, "USS %3d %3d",(int)(status_message.uss_ranges_m[3]*100),(int)(status_message.uss_ranges_m[4]*100));
     display.drawString(0, 7, display_line);
 }
+
+/*void setUSSChars(int distance, char *c1,char *c2, bool up) {
+    int EMPTY = 95;
+    int HIGH_CHAR = 104;
+    int LOW_CHAR = 97;
+    if(up) {
+        
+    }
+}*/
 
 /*void onUIPacketReceived(const uint8_t *buffer, size_t size) {
 
