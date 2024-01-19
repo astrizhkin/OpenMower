@@ -87,13 +87,15 @@ struct ll_status status_message = {0};
 struct ll_high_level_state last_high_level_state = {0};
 struct ll_motor_state last_motor_state = {0};
 
+//bool emergency_latch = true;
+//bool ROS_running = false;
+uint8_t emergency_high_level = 0;
+
 // A mutex which is used by core1 each time status_message is modified.
 // We can lock it during message transmission to prevent core1 to modify data in this time.
 auto_init_mutex(mtx_status_message);
 
-bool emergency_latch = true;
 bool charging_allowed = false;
-bool ROS_running = false;
 unsigned long charging_disabled_time = 0;
 
 float imu_temp[9];
@@ -142,12 +144,16 @@ void setEscEnable(bool enable) {
 }
 
 void updateEmergency() {
+    uint8_t last_emergency_low_leve_state = status_message.emergency_bitmask;
+    uint8_t emergency_low_level_state = 0;
+
     unsigned long now = millis();
     if (now - last_heartbeat_ms > HEARTBEAT_TIMEOUT_MS) {
-        emergency_latch = true;
-        ROS_running = false;
+        emergency_low_level_state |= 1<<EMERGENCY_ROS_TIMEOUT;
     }
-    uint8_t last_emergency = status_message.emergency_bitmask & (1<<EMERGENCY_LATCH_BIT);
+    if (emergency_high_level) {
+        emergency_low_level_state |= 1<<EMERGENCY_HIGH_LEVEL;
+    }
 
     // Mask the emergency bits. 2x Lift sensor, 2x Emergency Button
     bool emergency1 = !gpio_get(PIN_EMERGENCY_1);
@@ -159,7 +165,6 @@ void updateEmergency() {
         DEBUG_SERIAL.printf("Emergency %d %d %d %d\n",emergency1,emergency2,emergency3,emergency4);
     #endif*/
     now = millis();
-    uint8_t emergency_state = 0;
 
     bool is_tilted = emergency3 || emergency4;
     bool is_lifted = emergency3 && emergency4;
@@ -188,10 +193,10 @@ void updateEmergency() {
     if (lift_emergency_started_ms > 0 && (now - lift_emergency_started_ms) >= LIFT_EMERGENCY_MS) {
         // Emergency bit 2 (lift wheel 1)set?
         if (emergency3)
-            emergency_state |= 1<<EMERGENCY_LIFT1_BIT;
+            emergency_low_level_state |= 1<<EMERGENCY_LIFT1_BIT;
         // Emergency bit 1 (lift wheel 2)set?
         if (emergency4)
-            emergency_state |= 1<<EMERGENCY_LIFT2_BIT;
+            emergency_low_level_state |= 1<<EMERGENCY_LIFT2_BIT;
     }
 
     if (is_tilted) {
@@ -207,32 +212,27 @@ void updateEmergency() {
     if (tilt_emergency_started_ms > 0 && (now - tilt_emergency_started_ms) >= TILT_EMERGENCY_MS) {
         // Emergency bit 2 (lift wheel 1)set?
         if (emergency3)
-            emergency_state |= 1<<EMERGENCY_LIFT1_BIT;
+            emergency_low_level_state |= 1<<EMERGENCY_LIFT1_BIT;
         // Emergency bit 1 (lift wheel 2)set?
         if (emergency4)
-            emergency_state |= 1<<EMERGENCY_LIFT2_BIT;
+            emergency_low_level_state |= 1<<EMERGENCY_LIFT2_BIT;
     }
     if (button_emergency_started_ms > 0 && (now - button_emergency_started_ms) >= BUTTON_EMERGENCY_MS) {
         // Emergency bit 2 (stop button) set?
         if (emergency1)
-            emergency_state |= 1<<EMERGENCY_BUTTON1_BIT;
+            emergency_low_level_state |= 1<<EMERGENCY_BUTTON1_BIT;
         // Emergency bit 1 (stop button)set?
         if (emergency2)
-            emergency_state |= 1<<EMERGENCY_BUTTON2_BIT;
+            emergency_low_level_state |= 1<<EMERGENCY_BUTTON2_BIT;
     }
 
     //ESC must be enabled 
-    setEscEnable(emergency_state==0 && ROS_running);
+    setEscEnable(emergency_low_level_state==0);
 
-    if (emergency_state || emergency_latch) {
-        emergency_latch = true;
-        emergency_state |= 1<<EMERGENCY_LATCH_BIT;
-    }
+    status_message.emergency_bitmask = emergency_low_level_state;
 
-    status_message.emergency_bitmask = emergency_state;
-
-    // If it's a new emergency, instantly send the message. This is to not spam the channel during emergencies.
-    if (last_emergency != (emergency_state & (1<<EMERGENCY_LATCH_BIT))) {
+    // If emergency bits are chnaged, instantly send the message.
+    if (last_emergency_low_leve_state != emergency_low_level_state) {
         sendMessage(&status_message, sizeof(struct ll_status));
 
         // Update LEDs instantly
@@ -355,14 +355,14 @@ void setup() {
     DEBUG_SERIAL.println("Begin initialization");
 #endif
 
-    emergency_latch = true;
-    ROS_running = false;
-
     lift_emergency_started_ms = 0;
     button_emergency_started_ms = 0;
     // Initialize messages
     imu_message = {0};
     status_message = {0};
+    
+    //initially there is no connection to ROS
+    status_message.emergency_bitmask |= (1<<EMERGENCY_ROS_TIMEOUT);
     imu_message.type = PACKET_ID_LL_IMU;
     status_message.type = PACKET_ID_LL_STATUS;
 
@@ -479,18 +479,10 @@ void onPacketReceived(const uint8_t *buffer, size_t size) {
         return;
 
     if (buffer[0] == PACKET_ID_LL_HEARTBEAT && size == sizeof(struct ll_heartbeat)) {
-
         // CRC and packet is OK, reset watchdog
-        last_heartbeat_ms = millis();
-        ROS_running = true;
         struct ll_heartbeat *heartbeat = (struct ll_heartbeat *) buffer;
-        if (heartbeat->emergency_release_requested) {
-            emergency_latch = false;
-        }
-        // Check in this order, so we can set it again in the same packet if required.
-        if (heartbeat->emergency_requested) {
-            emergency_latch = true;
-        }
+        last_heartbeat_ms = millis();
+        emergency_high_level = heartbeat->emergency_high_level;
     } else if (buffer[0] == PACKET_ID_LL_HIGH_LEVEL_STATE && size == sizeof(struct ll_high_level_state)) {
         // copy the state
         last_high_level_state = *((struct ll_high_level_state *) buffer);
@@ -698,7 +690,7 @@ void loop() {
 
 void sendMessage(void *message, size_t size) {
     // Only send messages, if ROS is running, else Raspi sometimes doesn't boot
-    if (!ROS_running)
+    if (!(status_message.emergency_bitmask&(1<<EMERGENCY_ROS_TIMEOUT)))
         return;
 
     // packages need to be at least 1 byte of type, 1 byte of data and 2 bytes of CRC
@@ -757,8 +749,8 @@ void updateDisplay(bool forceDisplay) {
 
     //High level group 0-4 (5 symbols)
     //Communication heartbit status
-    status_line[0]         = 'T';
-    status_line_blink[0] = ROS_running ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
+    status_line[0]         = emergency_high_level!=0 ? 'E' : 'T';
+    status_line_blink[0]   = status_message.emergency_bitmask & (1<<EMERGENCY_ROS_TIMEOUT) ? DISPLAY_SLOW_BLINK : emergency_high_level!=0 ? DISPLAY_FAST_BLINK : DISPLAY_NO_BLINK;
 
     //GPS status
     status_line[1]         = now - last_high_level_ms < HIGH_LEVEL_TIMEOUT_MS ? 'G' : 'g';
@@ -809,7 +801,7 @@ void updateDisplay(bool forceDisplay) {
     status_line[6]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON1_BIT | 1<<EMERGENCY_BUTTON2_BIT) ? 'B' : ' ';
     status_line_blink[6]   = DISPLAY_FAST_BLINK;
     //Internal or external global emergency
-    status_line[7]         = status_message.emergency_bitmask & (1<<EMERGENCY_LATCH_BIT) ? 'E' : ' ';
+    status_line[7]         = status_message.emergency_bitmask !=0 ? 'E' : ' ';
     status_line_blink[7]   = DISPLAY_FAST_BLINK;
     //Rain sensor
     status_line[8]         = status_message.status_bitmask & (1<<STATUS_RAIN_BIT) ? 'R' : ' ';
