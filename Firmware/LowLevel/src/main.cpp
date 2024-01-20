@@ -151,7 +151,7 @@ void updateEmergency() {
     if (now - last_heartbeat_ms > HEARTBEAT_TIMEOUT_MS) {
         emergency_low_level_state |= 1<<EMERGENCY_ROS_TIMEOUT;
     }
-    if (emergency_high_level) {
+    if (emergency_high_level!=0) {
         emergency_low_level_state |= 1<<EMERGENCY_HIGH_LEVEL;
     }
 
@@ -690,8 +690,9 @@ void loop() {
 
 void sendMessage(void *message, size_t size) {
     // Only send messages, if ROS is running, else Raspi sometimes doesn't boot
-    if (!(status_message.emergency_bitmask&(1<<EMERGENCY_ROS_TIMEOUT)))
+    if (status_message.emergency_bitmask&(1<<EMERGENCY_ROS_TIMEOUT)) {
         return;
+    }
 
     // packages need to be at least 1 byte of type, 1 byte of data and 2 bytes of CRC
     if (size < 4) {
