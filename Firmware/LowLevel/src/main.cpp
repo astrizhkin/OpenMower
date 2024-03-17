@@ -846,10 +846,10 @@ void updateDisplay(bool forceDisplay) {
     //display.drawString(0, 2, display_line);
 
     // Rear motor
-    display_motor_status[0]        = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD | 1<<MOTOR_STATUS_BATTERY_L1  | 1<<MOTOR_STATUS_BATTERY_L2) ? 'V' : ' ';
-    display_motor_status_blink[0]  = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD) ? DISPLAY_FAST_BLINK : last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_L1) ? DISPLAY_NORM_BLINK : DISPLAY_SLOW_BLINK;
-    display_motor_status[1]        = last_motor_state.status[0] & (1<<MOTOR_STATUS_GEN_TIMEOUT) ? 'G' : last_motor_state.status[0] & (1<<MOTOR_STATUS_ADC_TIMEOUT) ? 'A' : ' ';
-    display_motor_status_blink[1]  = last_motor_state.status[0] & (1<<MOTOR_STATUS_GEN_TIMEOUT | 1<<MOTOR_STATUS_ADC_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
+    display_motor_status[0]       = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD | 1<<MOTOR_STATUS_BATTERY_L1  | 1<<MOTOR_STATUS_BATTERY_L2) ? 'V' : ' ';
+    display_motor_status_blink[0] = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD) ? DISPLAY_FAST_BLINK : last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_L1) ? DISPLAY_NORM_BLINK : DISPLAY_SLOW_BLINK;
+    display_motor_status[1]       = last_motor_state.status[0] & (1<<MOTOR_STATUS_GEN_TIMEOUT) ? 'G' : last_motor_state.status[0] & (1<<MOTOR_STATUS_ADC_TIMEOUT) ? 'A' : ' ';
+    display_motor_status_blink[1] = last_motor_state.status[0] & (1<<MOTOR_STATUS_GEN_TIMEOUT | 1<<MOTOR_STATUS_ADC_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
     display_motor_status[2]       = 'C';//connected
     display_motor_status_blink[2] = last_motor_state.status[0] & (1<<MOTOR_STATUS_CONN_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
     display_motor_status[3]       = last_motor_state.status[0] & (1<<MOTOR_STATUS_PCB_TEMP_ERR | 1<<MOTOR_STATUS_PCB_TEMP_WARN) ? 'T' : ' ';
@@ -874,10 +874,10 @@ void updateDisplay(bool forceDisplay) {
     display.drawString(0, 1, display_line);
 
     // Front motor
-    display_motor_status[0]        = last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_DEAD | 1<<MOTOR_STATUS_BATTERY_L1  | 1<<MOTOR_STATUS_BATTERY_L2) ? 'V' : ' ';
-    display_motor_status_blink[0]  = last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_DEAD) ? DISPLAY_FAST_BLINK : last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_L1) ? DISPLAY_NORM_BLINK : DISPLAY_SLOW_BLINK;
-    display_motor_status[1]        = last_motor_state.status[1] & (1<<MOTOR_STATUS_GEN_TIMEOUT) ? 'G' : last_motor_state.status[1] & (1<<MOTOR_STATUS_ADC_TIMEOUT) ? 'A' : ' ';
-    display_motor_status_blink[1]  = last_motor_state.status[1] & (1<<MOTOR_STATUS_GEN_TIMEOUT | 1<<MOTOR_STATUS_ADC_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
+    display_motor_status[0]       = last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_DEAD | 1<<MOTOR_STATUS_BATTERY_L1  | 1<<MOTOR_STATUS_BATTERY_L2) ? 'V' : ' ';
+    display_motor_status_blink[0] = last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_DEAD) ? DISPLAY_FAST_BLINK : last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_L1) ? DISPLAY_NORM_BLINK : DISPLAY_SLOW_BLINK;
+    display_motor_status[1]       = last_motor_state.status[1] & (1<<MOTOR_STATUS_GEN_TIMEOUT) ? 'G' : last_motor_state.status[1] & (1<<MOTOR_STATUS_ADC_TIMEOUT) ? 'A' : ' ';
+    display_motor_status_blink[1] = last_motor_state.status[1] & (1<<MOTOR_STATUS_GEN_TIMEOUT | 1<<MOTOR_STATUS_ADC_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
     display_motor_status[2]       = 'C';//connected
     display_motor_status_blink[2] = last_motor_state.status[1] & (1<<MOTOR_STATUS_CONN_TIMEOUT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
     display_motor_status[3]       = last_motor_state.status[1] & (1<<MOTOR_STATUS_PCB_TEMP_ERR | 1<<MOTOR_STATUS_PCB_TEMP_WARN) ? 'T' : ' ';
@@ -890,7 +890,7 @@ void updateDisplay(bool forceDisplay) {
     display_motor_status_blink[6] = last_motor_state.status[1] & (1<<MOTOR_STATUS_BAD_CTRL_MODE) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
     display_motor_status[7]       = 'D';//drive on/disabled blink
     display_motor_status_blink[7] = last_motor_state.status[1] & (1<<MOTOR_STATUS_DISABLED) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
-    if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[1]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
+    if( now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[1]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
         if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
             memcpy(display_motor_status," NO DATA",8);
         }
@@ -901,16 +901,45 @@ void updateDisplay(bool forceDisplay) {
     snprintf(display_line,17, "Front   %.8s",display_motor_status);
     display.drawString(0, 2, display_line);
 
+    // Mower motor
+    display_motor_status[0]       = last_motor_state.status[2] & (XESC_FAULT_OVERVOLTAGE | XESC_FAULT_UNDERVOLTAGE)? 'V' : ' ';
+    display_motor_status_blink[0] = last_motor_state.status[2] & XESC_FAULT_OVERVOLTAGE ? DISPLAY_FAST_BLINK : DISPLAY_SLOW_BLINK;
+    display_motor_status[1]       = last_motor_state.status[2] & XESC_FAULT_OVERCURRENT ? 'A' : ' ';
+    display_motor_status_blink[1] = DISPLAY_FAST_BLINK;
+    display_motor_status[2]       = last_motor_state.status[2] & XESC_FAULT_UNINITIALIZED ? 'E' : ' ';
+    display_motor_status_blink[2] = DISPLAY_FAST_BLINK;
+    display_motor_status[3]       = last_motor_state.status[2] & XESC_FAULT_OVERTEMP_PCB ? 'T' : ' ';
+    display_motor_status_blink[3] = DISPLAY_FAST_BLINK;
+    display_motor_status[4]       = last_motor_state.status[2] & XESC_FAULT_OVERTEMP_MOTOR ? 'M' : ' ';
+    display_motor_status_blink[4] = DISPLAY_FAST_BLINK;
+    display_motor_status[5]       = last_motor_state.status[2] & XESC_FAULT_INVALID_HALL ? 'H' : ' ';
+    display_motor_status_blink[5] = DISPLAY_FAST_BLINK;
+    display_motor_status[6]       = last_motor_state.status[2] & XESC_FAULT_WATCHDOG ? 'W' : ' ';
+    display_motor_status_blink[6] = DISPLAY_FAST_BLINK;
+    display_motor_status[7]       = 'D';//drive on/disabled blink
+    display_motor_status_blink[7] = last_motor_state.status[2] != 0 ? DISPLAY_FAST_BLINK : DISPLAY_NO_BLINK;
+    if( now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[2]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
+        if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
+            memcpy(display_motor_status," NO DATA",8);
+        }
+        for(int i=0;i<8;i++) display_motor_status_blink[i]=DISPLAY_SLOW_BLINK;
+    }
+    updateBlink(display_motor_status,display_motor_status_blink,8,displayUpdateCounter);
+
+    snprintf(display_line,17, "Mow     %.8s",display_motor_status);
+    display.drawString(0, 3, display_line);
+
     //snprintf(display_line,17, "Main    %.8s",ll_display_emerg);
     //display.drawString(0, 2, display_line);
 
     snprintf(display_line,17, "V %4.1f %4.1f %4.2f",status_message.v_battery,status_message.v_charge,status_message.charging_current);
-    display.drawString(0, 3, display_line);
-
-    snprintf(display_line,17, "X %4.1f %4.1f %4.1f",imu_message.acceleration_mss[0],imu_message.acceleration_mss[1],imu_message.acceleration_mss[2]);
     display.drawString(0, 4, display_line);
 
-    snprintf(display_line,17, "G %4.1f %4.1f %4.1f",imu_message.gyro_rads[0],imu_message.gyro_rads[1],imu_message.gyro_rads[2]);
+    double acceleration = sqrt(imu_message.acceleration_mss[0]*imu_message.acceleration_mss[0]+
+                               imu_message.acceleration_mss[1]*imu_message.acceleration_mss[1] +
+                               imu_message.acceleration_mss[2]*imu_message.acceleration_mss[2]);
+    double gyro = abs(imu_message.gyro_rads[0]) + abs(imu_message.gyro_rads[1]) + abs(imu_message.gyro_rads[2]);
+    snprintf(display_line,17, "X %3.1f G %3.f     ",acceleration,gyro);
     display.drawString(0, 5, display_line);
 
     //snprintf(display_line,17, "ADC %d %d ",batteryADCRaw,chargerADCRaw);

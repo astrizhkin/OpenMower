@@ -68,6 +68,18 @@ enum HighLevelMode {
 #define MOTOR_STATUS_BATTERY_L1             13
 #define MOTOR_STATUS_BATTERY_L2             14
 
+//XESC fault codes
+typedef enum XescFaultCode {
+    XESC_FAULT_UNINITIALIZED=1,
+    XESC_FAULT_WATCHDOG=2,
+    XESC_FAULT_UNDERVOLTAGE=4,
+    XESC_FAULT_OVERVOLTAGE=8,
+    XESC_FAULT_OVERCURRENT=16,
+    XESC_FAULT_OVERTEMP_MOTOR=32,
+    XESC_FAULT_OVERTEMP_PCB=64,
+    XESC_FAULT_INVALID_HALL=128
+} XescFaultCode;
+
 // ############################### BATTERY ###############################
 /* Battery voltage calibration: connect power source.
  * see How to calibrate.
