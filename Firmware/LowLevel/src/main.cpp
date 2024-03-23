@@ -22,6 +22,7 @@
 #include "pins.h"
 #include "imu.h"
 #include "font.h"
+#include "ant_bms/ant_bms.h"
 #include <U8x8lib.h>
 //#include <U8g2lib.h>
 #include <Wire.h>
@@ -55,7 +56,8 @@
     #define DEBUG_SERIAL Serial
 #endif
 
-#define PACKET_SERIAL Serial1
+#define UPLINK_SERIAL Serial1
+#define BMS_SERIAL Serial2
 
 // Millis after charging is retried
 #define CHARGING_RETRY_MS 10000
@@ -66,8 +68,17 @@
 #define R_SHUNT 0.003f
 #define CURRENT_SENSE_GAIN 60.0f
 
-PacketSerial packetSerial; // COBS communication PICO <> Raspi
+PacketSerial uplinkPacketSerial; // COBS communication PICO <> Raspi
 FastCRC16 CRC16;
+
+#ifdef BMS_SERIAL
+    #define BMS_UPDATE_PERIOD_MS 2000
+    #define BMS_RX_TIMEOUT_MS 200
+    #define BMS_TIMEOUT_MS 5000
+
+    ant_bms::AntBms ant_bms_parser;
+    unsigned long last_bms_update_ms = 0;
+#endif
 
 unsigned long last_imu_ms = 0;
 unsigned long last_status_update_ms = 0;
@@ -115,7 +126,7 @@ char    display_line[16+1]; //16 chars
 
 
 unsigned long last_uss_sensor_result_ms[USS_COUNT];
-unsigned long last_uss_trigger=0;
+unsigned long last_uss_trigger_ms=0;
 static int32_t batVoltageFixdt  = (400 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE << 16;  // Fixed-point filter output initialized at 400 V*100/cell = 4 V/cell converted to fixed-point
 static int32_t chargeVoltageFixdt  = (0 * BAT_CELLS * CHARGE_CALIB_ADC) / CHARGE_CALIB_REAL_VOLTAGE << 16;  // Fixed-point filter output initialized at 0V converted to fixed-point
 static int32_t chargeCurrentFixdt  = (0 * CURRENT_CALIB_ADC) / CURRENT_CALIB_REAL_CURRENT << 16;  // Fixed-point filter output initialized at 0 amps converted to fixed-point
@@ -124,10 +135,23 @@ static int32_t chargeCurrentFixdt  = (0 * CURRENT_CALIB_ADC) / CURRENT_CALIB_REA
 U8X8_SSD1309_128X64_NONAME0_HW_I2C display(U8X8_PIN_NONE);
 //U8G2_SSD1309_128X64_NONAME0_2_HW_I2C display(U8G2_R0, PIN_DISPLAY_RESET, PIN_DISPLAY_SCK, PIN_DISPLAY_SDA);
 
-void sendMessage(void *message, size_t size);
+void sendUplinkMessage(void *message, size_t size);
 void updateDisplay(bool forceDisplay);
 void updateBlinkState(char *message, uint8_t blinkState, int size, int currentBlinkState);
-void onPacketReceived(const uint8_t *buffer, size_t size);
+void onUplinkPacketReceived(const uint8_t *buffer, size_t size);
+
+void bmsLogFunc(int level, const char * format, ...) {
+#ifdef USB_DEBUG
+    char *string;
+    va_list args;
+    va_start(args, format);
+    // variadic printf with allocated string. must free()
+    vasiprintf(&string, format, args);
+    DEBUG_SERIAL.println(string);
+    free(string);
+    va_end(args);
+#endif //USB_DEBUG
+}
 
 void setRaspiPower(bool power) {
     // Update status bits in the status message
@@ -233,36 +257,28 @@ void updateEmergency() {
 
     // If emergency bits are chnaged, instantly send the message.
     if (last_emergency_low_leve_state != emergency_low_level_state) {
-        sendMessage(&status_message, sizeof(struct ll_status));
+        sendUplinkMessage(&status_message, sizeof(struct ll_status));
 
         // Update LEDs instantly
         // updateDisplay(true);
     }
 }
 
-/*double kalman(double U){
-  static const double R = 40;
-  static const double H = 1.00;
-  static double Q = 10;
-  static double P = 0;
-  static double U_hat = 0;
-  static double K = 0;
-  K = P*H/(H*P*H+R);
-  U_hat += + K*(U-H*U_hat);
-  P = (1-K*H)*P+Q;
-  return U_hat;
-}*/
-
 void setup1() {
     // Core
     digitalWrite(LED_BUILTIN, HIGH);
 }
+
+void loop1_short_job(int max_job_length_us) {
+    //here we can run some short (leass than USS_CYCLETIME_MS) tasks
+}
+
 void loop1() {
     // Loop through the mux and query actions. Store the result in the multicore fifo
     bool state;
     double distance;
     unsigned long duration;
-    unsigned long wait_us,response_us,uss_measurement_age;   
+    unsigned long wait_us,response_us,uss_measurement_age_ms;   
 
     for (uint8_t mux_address = 0; mux_address < 7; mux_address++) {
         gpio_put_masked(0b111 << 13, mux_address << 13);
@@ -275,25 +291,33 @@ void loop1() {
                 continue;
             }
             digitalWrite(PIN_MUX_OUT, LOW); 
-            unsigned long prev_uss_delta = millis()-last_uss_trigger;
-            if(prev_uss_delta < USS_CYCLETIME_MS) {
-                wait_us = (USS_CYCLETIME_MS-prev_uss_delta)*1000;
+            unsigned long prev_uss_delta_ms = millis()-last_uss_trigger_ms;
+            if(prev_uss_delta_ms < USS_CYCLETIME_MS) {
+                wait_us = (USS_CYCLETIME_MS-prev_uss_delta_ms)*1000;
+
+                //we can do a short job here ...
+                loop1_short_job(wait_us);
+                // and test again, how long we should sleep before next uss request
+                prev_uss_delta_ms = millis()-last_uss_trigger_ms;
+                if(prev_uss_delta_ms < USS_CYCLETIME_MS) {
+                    wait_us = (USS_CYCLETIME_MS-prev_uss_delta_ms)*1000;
+                } else {
+                    //unfortunately short job was not short actually
+                    wait_us = 5;
+                }
             }else{
                 wait_us = 5;
             }
+            
             delayMicroseconds(wait_us);
             // Sets the trigPin on HIGH state for 20 micro seconds at least
             digitalWrite(PIN_MUX_OUT, HIGH); 
             delayMicroseconds(25);
-            last_uss_trigger = millis();
+            last_uss_trigger_ms = millis();
             digitalWrite(PIN_MUX_OUT, LOW);
             duration = pulseIn(PIN_MUX_IN, HIGH,USS_ECHO_TIMEOUT_US); // 35000UL for full cycle, Reads the echoPin, returns the sound wave travel time in microseconds
             distance = duration*0.343/2;//0.343mm per 1 microsecond
-            //distance = kalman(distance);
-            /*if(distance < 2000) {
-                distance = 0;
-            }*/
-            response_us = millis()-last_uss_trigger;
+            response_us = millis()-last_uss_trigger_ms;
             #ifdef USB_DEBUG
                 DEBUG_SERIAL.printf("%i %icm %ius wt %ims rsp %ims\t",mux_address,(int)(distance/10),duration,wait_us/1000,response_us);
             #endif
@@ -310,13 +334,13 @@ void loop1() {
             case 4:
                 if(duration!=0) {
                     status_message.uss_ranges_m[mux_address]=distance/1000;
-                    last_uss_sensor_result_ms[mux_address]=last_uss_trigger;
+                    last_uss_sensor_result_ms[mux_address]=last_uss_trigger_ms;
                 }
-                uss_measurement_age = millis() - last_uss_sensor_result_ms[mux_address];
-                if(uss_measurement_age > UINT16_MAX) {
-                    uss_measurement_age = UINT16_MAX;
+                uss_measurement_age_ms = millis() - last_uss_sensor_result_ms[mux_address];
+                if(uss_measurement_age_ms > UINT16_MAX) {
+                    uss_measurement_age_ms = UINT16_MAX;
                 }
-                status_message.uss_age_ms[mux_address] = uss_measurement_age;
+                status_message.uss_age_ms[mux_address] = uss_measurement_age_ms;
                 break;
             case 5:
                 //inverted
@@ -388,9 +412,9 @@ void setup() {
     delay(100);
     // Enable raspi power
 #ifdef USB_DEBUG
-    DEBUG_SERIAL.println("Power RPi");
+    DEBUG_SERIAL.println("Power RPi & ESC");
 #endif
-    display.drawString(0,1,"Power pins...");
+    display.drawString(0,1,"Power RPi & ESC");
     delay(100);
     setRaspiPower(true);
     setEscEnable(false);
@@ -409,9 +433,18 @@ void setup() {
     analogReadResolution(12);
 
     // init serial com to RasPi
-    PACKET_SERIAL.begin(115200);
-    packetSerial.setStream(&PACKET_SERIAL);
-    packetSerial.setPacketHandler(&onPacketReceived);
+    UPLINK_SERIAL.begin(115200);
+    uplinkPacketSerial.setStream(&UPLINK_SERIAL);
+    uplinkPacketSerial.setPacketHandler(&onUplinkPacketReceived);
+
+#ifdef BMS_SERIAL    
+    BMS_SERIAL.begin(19200);
+    ant_bms_parser.set_stream(&BMS_SERIAL);
+    ant_bms_parser.set_rx_timeout(BMS_RX_TIMEOUT_MS);
+    ant_bms_parser.set_status_timeout(BMS_TIMEOUT_MS);
+    ant_bms_parser.set_logFunc(bmsLogFunc);
+#endif
+
 #ifdef USB_DEBUG
     DEBUG_SERIAL.println("IMU init");
 #endif
@@ -466,7 +499,7 @@ void setup() {
     display.clear();
 }
 
-void onPacketReceived(const uint8_t *buffer, size_t size) {
+void onUplinkPacketReceived(const uint8_t *buffer, size_t size) {
     // sanity check for CRC to work (1 type, 1 data, 2 CRC)
     if (size < 4)
         return;
@@ -555,9 +588,32 @@ void filtLowPass32(int32_t u, uint16_t coef, int32_t *y) {
   *y = (int32_t)tmp + (*y);
 }
 
+void readBatterySensors() {
+    uint16_t raw = analogRead(PIN_ANALOG_BATTERY_VOLTAGE);
+    filtLowPass32(raw, BAT_FILT_COEF, &batVoltageFixdt);
+    status_message.v_battery = (float)(batVoltageFixdt >> 16) * BAT_CALIB_REAL_VOLTAGE / (BAT_CALIB_ADC * 100.0);
+
+    if(status_message.v_charge > CHARGE_MIN_VOLT) { //charger powers current sensor. no reason to read unpowered sensor
+        raw = analogRead(PIN_ANALOG_CHARGE_CURRENT);
+        filtLowPass32(raw, CURRENT_FILT_COEF, &chargeCurrentFixdt);
+        status_message.charging_current = (float)(chargeCurrentFixdt >> 16) * CURRENT_CALIB_REAL_CURRENT / (CURRENT_CALIB_ADC * 100.0);
+    } else {
+        status_message.charging_current = -0.2;
+    }
+}
+
+void readChargerVoltage() {
+    uint16_t raw = analogRead(PIN_ANALOG_CHARGE_VOLTAGE);
+    filtLowPass32(raw, CHARGE_FILT_COEF, &chargeVoltageFixdt);
+    status_message.v_charge = (float)(chargeVoltageFixdt >> 16) * CHARGE_CALIB_REAL_VOLTAGE / (CHARGE_CALIB_ADC * 100.0);
+}
+
 
 void loop() {
-    packetSerial.update();
+    uplinkPacketSerial.update();
+#ifdef BMS_SERIAL
+    ant_bms_parser.loop();
+#endif
     imu_loop();
     updateChargingEnabled();
     updateEmergency();
@@ -579,27 +635,10 @@ void loop() {
         }
 
         imu_message.dt_millis = now - last_imu_ms;
-        sendMessage(&imu_message, sizeof(struct ll_imu));
+        sendUplinkMessage(&imu_message, sizeof(struct ll_imu));
     }
                 
     if (now - last_status_update_ms > STATUS_CYCLETIME_MS) {
-        uint16_t raw = analogRead(PIN_ANALOG_BATTERY_VOLTAGE);
-        filtLowPass32(raw, BAT_FILT_COEF, &batVoltageFixdt);
-        status_message.v_battery = (float)(batVoltageFixdt >> 16) * BAT_CALIB_REAL_VOLTAGE / (BAT_CALIB_ADC * 100.0);
-        // status_message.v_battery = 
-        //         (float) analogRead(PIN_ANALOG_BATTERY_VOLTAGE) * (3.3f / 4096.0f) * ((VIN_R1 + VIN_R2) / VIN_R2);
-        raw = analogRead(PIN_ANALOG_CHARGE_VOLTAGE);
-        filtLowPass32(raw, CHARGE_FILT_COEF, &chargeVoltageFixdt);
-        status_message.v_charge = (float)(chargeVoltageFixdt >> 16) * CHARGE_CALIB_REAL_VOLTAGE / (CHARGE_CALIB_ADC * 100.0);
-
-        if(status_message.v_charge > CHARGE_MIN_VOLT) { //charger powers current sensor. no reason to read unpowered sensor
-            raw = analogRead(PIN_ANALOG_CHARGE_CURRENT);
-            filtLowPass32(raw, CURRENT_FILT_COEF, &chargeCurrentFixdt);
-            status_message.charging_current = (float)(chargeCurrentFixdt >> 16) * CURRENT_CALIB_REAL_CURRENT / (CURRENT_CALIB_ADC * 100.0);
-        } else {
-            status_message.charging_current = -0.2;
-        }
-
         status_message.status_bitmask &= ~(1 << STATUS_CHARGING_ALLOWED_BIT);
         status_message.status_bitmask |= (charging_allowed & 0b1) << STATUS_CHARGING_ALLOWED_BIT;
 
@@ -617,21 +656,39 @@ void loop() {
             status_message.status_bitmask |= 1<<STATUS_IMU_TIMEOUT_BIT;
         }
 
+        // Check BMS temeout
+#ifdef BMS_SERIAL        
+        status_message.status_bitmask &= ~(1 << STATUS_BMS_TIMEOUT_BIT);
+        if( !ant_bms_parser.is_online() ) {
+            status_message.status_bitmask |= 1<<STATUS_BMS_TIMEOUT_BIT;
+#endif //BMS_SERIAL        
+            readChargerVoltage();
+            readBatterySensors();
+
+            // calculate percent value accu filling
+            float delta = BAT_FULL1 - BAT_EMPTY;
+            float vo = status_message.v_battery - BAT_EMPTY;
+            status_message.batt_percentage = vo / delta * 100;
+#ifdef BMS_SERIAL        
+        } else {
+            readChargerVoltage();
+            status_message.v_battery = ant_bms_parser.total_voltage_sensor_;
+            status_message.charging_current = ant_bms_parser.current_sensor_;
+            status_message.batt_percentage = ant_bms_parser.soc_sensor_;
+        }
+#endif //BMS_SERIAL
+        if (status_message.batt_percentage > 100) {
+            status_message.batt_percentage = 100;
+        }
+
         // Check battery empty
         status_message.status_bitmask &= ~(1 << STATUS_BATTERY_EMPTY_BIT);
         if (status_message.v_battery < BAT_EMPTY) {
             status_message.status_bitmask |= 1<<STATUS_BATTERY_EMPTY_BIT;
         }
 
-        // calculate percent value accu filling
-        float delta = BAT_FULL1 - BAT_EMPTY;
-        float vo = status_message.v_battery - BAT_EMPTY;
-        status_message.batt_percentage = vo / delta * 100;
-        if (status_message.batt_percentage > 100)
-            status_message.batt_percentage = 100;
-
         mutex_enter_blocking(&mtx_status_message);
-        sendMessage(&status_message, sizeof(struct ll_status));
+        sendUplinkMessage(&status_message, sizeof(struct ll_status));
         mutex_exit(&mtx_status_message);
 
         last_status_update_ms = now;
@@ -679,16 +736,23 @@ void loop() {
         DEBUG_SERIAL.print(status_message.uss_ranges_m[4], 3);
         DEBUG_SERIAL.println();*/
 
-#endif
+#endif //USB_DEBUG
     }
 
     if (now - last_display_ms > DISPLAY_CYCLETIME_MS) {
         updateDisplay(false);
         last_display_ms = now;
     }
+
+#ifdef BMS_SERIAL
+    if (now - last_bms_update_ms > BMS_UPDATE_PERIOD_MS) {
+        ant_bms_parser.update();
+        last_bms_update_ms = now;
+    }
+#endif //BMS_SERIAL
 }
 
-void sendMessage(void *message, size_t size) {
+void sendUplinkMessage(void *message, size_t size) {
     // Only send messages, if ROS is running, else Raspi sometimes doesn't boot
     if (status_message.emergency_bitmask&(1<<EMERGENCY_ROS_TIMEOUT)) {
         return;
@@ -705,7 +769,7 @@ void sendMessage(void *message, size_t size) {
     data_pointer[size - 1] = (crc >> 8) & 0xFF;
     data_pointer[size - 2] = crc & 0xFF;
 
-    packetSerial.send((uint8_t *) message, size);
+    uplinkPacketSerial.send((uint8_t *) message, size);
 }
 
 void updateBlink(char *message, uint8_t *blinkState, int size,int currentBlinkCounter) {
@@ -823,10 +887,12 @@ void updateDisplay(bool forceDisplay) {
     status_line_blink[12]        = status_message.status_bitmask & (1<<STATUS_ESC_ENABLED_BIT) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
     
     //Charging and battery status 12-15 (4 symbols)
-    uint8_t batt_percentage = status_message.batt_percentage >= 100 ? 99 : status_message.batt_percentage < 0 ? 0 : status_message.batt_percentage;
     status_line[13]        = status_message.status_bitmask & (1<<STATUS_CHARGING_ALLOWED_BIT) ? 'C' : ' ';
+    uint8_t batt_percentage = status_message.batt_percentage >= 100 ? 99 : status_message.batt_percentage < 0 ? 0 : status_message.batt_percentage;
     status_line[14]        = '0'+batt_percentage/10;
     status_line[15]        = '0'+batt_percentage%10;
+    status_line_blink[14]  = status_message.status_bitmask & (1<<STATUS_BMS_TIMEOUT_BIT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
+    status_line_blink[15]  = status_message.status_bitmask & (1<<STATUS_BMS_TIMEOUT_BIT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
     updateBlink(status_line,status_line_blink,16,displayUpdateCounter);
 
     snprintf(display_line,17, "%.16s",status_line);
