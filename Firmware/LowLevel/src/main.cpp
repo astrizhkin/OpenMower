@@ -532,7 +532,7 @@ bool checkShouldStartCharge() {
     return status_message.v_battery < status_message.v_charge
         && status_message.v_charge < CHARGE_MAX_VOLT 
         && status_message.v_charge > CHARGE_MIN_VOLT 
-        && status_message.v_battery < BAT_OK1;
+        && status_message.v_battery < BAT_OK_START_CHARGE;
 }
 
 bool checkShouldStopCharge() {
@@ -540,7 +540,7 @@ bool checkShouldStopCharge() {
         || status_message.v_charge > CHARGE_MAX_VOLT 
         || status_message.v_charge < CHARGE_MIN_VOLT 
         //|| status_message.charging_current < 0.5
-        || status_message.v_battery > BAT_STOP_CHARGE;
+        || status_message.v_battery > BAT_CHARGE_STOP;
 }
 
 void updateChargingEnabled() {
@@ -666,8 +666,8 @@ void loop() {
             readBatterySensors();
 
             // calculate percent value accu filling
-            float delta = BAT_FULL1 - BAT_EMPTY;
-            float vo = status_message.v_battery - BAT_EMPTY;
+            float delta = BAT_FULL - BAT_DISCHARGE_CUT_OFF;
+            float vo = status_message.v_battery - BAT_DISCHARGE_CUT_OFF;
             status_message.batt_percentage = vo / delta * 100;
 #ifdef BMS_SERIAL        
         } else {
@@ -683,7 +683,7 @@ void loop() {
 
         // Check battery empty
         status_message.status_bitmask &= ~(1 << STATUS_BATTERY_EMPTY_BIT);
-        if (status_message.v_battery < BAT_EMPTY) {
+        if (status_message.v_battery < BAT_WARN3) {
             status_message.status_bitmask |= 1<<STATUS_BATTERY_EMPTY_BIT;
         }
 
@@ -1002,10 +1002,10 @@ void updateDisplay(bool forceDisplay) {
     display.drawString(0, 4, display_line);
 
     double acceleration = sqrt(imu_message.acceleration_mss[0]*imu_message.acceleration_mss[0]+
-                               imu_message.acceleration_mss[1]*imu_message.acceleration_mss[1] +
+                               imu_message.acceleration_mss[1]*imu_message.acceleration_mss[1]+
                                imu_message.acceleration_mss[2]*imu_message.acceleration_mss[2]);
     double gyro = abs(imu_message.gyro_rads[0]) + abs(imu_message.gyro_rads[1]) + abs(imu_message.gyro_rads[2]);
-    snprintf(display_line,17, "X %3.1f G %3.f     ",acceleration,gyro);
+    snprintf(display_line,17, "X %4.1f G %4.1f   ",acceleration,gyro);
     display.drawString(0, 5, display_line);
 
     //snprintf(display_line,17, "ADC %d %d ",batteryADCRaw,chargerADCRaw);

@@ -94,39 +94,36 @@ typedef enum XescFaultCode {
 #define BAT_CALIB_REAL_VOLTAGE  4160      // input voltage measured by multimeter (multiplied by 100). In this case 41.60 V * 100 = 4160
 #define BAT_CALIB_ADC           3325      // adc-value measured by mainboard (value nr 5 on UART debug output)
 
-#define BAT_CELLS               12        // battery number of cells. Normal Hoverboard battery: 10s
 #define BAT_LIFEPO4                         //battry type BAT_LIION or BAT_LIFEPO4
 
 #ifdef BAT_LIION
-    #define BAT_MAX             (4.25 * BAT_CELLS)    // Max voltage during charge
-    #define BAT_STOP_CHARGE     (4.20 * BAT_CELLS)    // Stop charge
-    #define BAT_FULL1           (4.15 * BAT_CELLS)    // Full right after charge
-    #define BAT_FULL2           (4.10 * BAT_CELLS)    // Full
-    #define BAT_OK1             (4.05 * BAT_CELLS)    // ok
-    #define BAT_OK2             (4.00 * BAT_CELLS)    // ok
-    #define BAT_OK3             (3.90 * BAT_CELLS)    // ok
-    #define BAT_OK4             (3.80 * BAT_CELLS)    // ok
+    #define BAT_CELLS               10        // battery number of cells. Normal Hoverboard battery: 10s
+
+    #define BAT_CHARGE_IN_MAX   (4.30 * BAT_CELLS)    // Charger voltage input limit
+    #define BAT_CHARGE_CUT_OFF  (4.20 * BAT_CELLS)    // Charge cut-off voltage
+    #define BAT_CHARGE_BALANCE  (4.175 * BAT_CELLS)   // Charge equalization voltage
+    #define BAT_CHARGE_STOP     (4.15 * BAT_CELLS)    // Normal stop charge
+    #define BAT_FULL            (4.10 * BAT_CELLS)    // Full right after charge
+    #define BAT_OK_START_CHARGE (4.05 * BAT_CELLS)    // ok
     #define BAT_WARN1           (3.70 * BAT_CELLS)    // warning 1
     #define BAT_WARN2           (3.60 * BAT_CELLS)    // warning 2
     #define BAT_WARN3           (3.50 * BAT_CELLS)    // almost empty. Charge now!
-    #define BAT_EMPTY           (3.37 * BAT_CELLS)    // empty
+    #define BAT_DISCHARGE_CUT_OFF (3.37 * BAT_CELLS)    // empty
 #endif
 
 #ifdef BAT_LIFEPO4
-    #define BAT_CHARGER_MAX     (3.75 * BAT_CELLS)    // Charger voltage limit
-    #define BAT_MAX             (3.60 * BAT_CELLS)    // Max voltage during charge
-    #define BAT_STOP_CHARGE     (3.55 * BAT_CELLS)    // Stop charge
-    #define BAT_FULL_CHARGE     (3.50 * BAT_CELLS)    // Full during charge
-    #define BAT_FULL1           (3.45 * BAT_CELLS)    // Full right after charge
-    #define BAT_FULL2           (3.40 * BAT_CELLS)    // Full
-    #define BAT_OK1             (3.30 * BAT_CELLS)    // ok
-    #define BAT_OK2             (3.20 * BAT_CELLS)    // ok
-    #define BAT_OK3             (3.10 * BAT_CELLS)    // ok
-    #define BAT_OK4             (3.00 * BAT_CELLS)    // ok
-    #define BAT_WARN1           (2.90 * BAT_CELLS)    // warning 1
-    #define BAT_WARN2           (2.80 * BAT_CELLS)    // warning 2
-    #define BAT_WARN3           (2.70 * BAT_CELLS)    // almost empty. Charge now!
-    #define BAT_EMPTY           (2.50 * BAT_CELLS)    // empty
+    #define BAT_CELLS               12        // battery number of cells
+
+    #define BAT_CHARGE_IN_MAX   (3.75 * BAT_CELLS)    // Charger voltage input limit
+    #define BAT_CHARGE_CUT_OFF  (3.65 * BAT_CELLS)    // Charge cut-off voltage
+    #define BAT_CHARGE_BALANCE  (3.60 * BAT_CELLS)    // Charge equalization voltage
+    #define BAT_CHARGE_STOP     (3.55 * BAT_CELLS)    // Normal stop charge
+    #define BAT_FULL            (3.45 * BAT_CELLS)    // Full right after charge
+    #define BAT_OK_START_CHARGE (3.30 * BAT_CELLS)    // ok
+    #define BAT_WARN1           (2.70 * BAT_CELLS)    // warning 1
+    #define BAT_WARN2           (2.60 * BAT_CELLS)    // warning 2
+    #define BAT_WARN3           (2.50 * BAT_CELLS)    // almost empty. Charge now!
+    #define BAT_DISCHARGE_CUT_OFF (2.40 * BAT_CELLS)  // empty. Cut off!
 #endif
 
 #define CHARGE_MAX_VOLT         (4.35 * BAT_CELLS)    // Charger max voltage limit
