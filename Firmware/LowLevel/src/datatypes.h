@@ -36,7 +36,7 @@ enum HighLevelMode {
 typedef enum StatusBits {
     STATUS_INIT_BIT = 0,
     STATUS_RASPI_POWER_BIT = 1,
-    STATUS_CHARGING_ALLOWED_BIT = 2,
+    STATUS_CHARGING_BIT = 2,
     STATUS_ESC_ENABLED_BIT = 3,
     STATUS_RAIN_BIT = 4,
     STATUS_USS_TIMEOUT_BIT = 5,
@@ -172,7 +172,7 @@ struct ll_status {
     // System voltage
     float v_battery;
     // Charge current
-    float charging_current;
+    float battery_current;
     uint8_t batt_percentage;
     uint16_t crc;
 } __attribute__((packed));

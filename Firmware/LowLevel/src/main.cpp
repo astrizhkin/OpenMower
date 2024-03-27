@@ -596,9 +596,10 @@ void readBatterySensors() {
     if(status_message.v_charge > CHARGE_MIN_VOLT) { //charger powers current sensor. no reason to read unpowered sensor
         raw = analogRead(PIN_ANALOG_CHARGE_CURRENT);
         filtLowPass32(raw, CURRENT_FILT_COEF, &chargeCurrentFixdt);
-        status_message.charging_current = (float)(chargeCurrentFixdt >> 16) * CURRENT_CALIB_REAL_CURRENT / (CURRENT_CALIB_ADC * 100.0);
+        status_message.battery_current = (float)(chargeCurrentFixdt >> 16) * CURRENT_CALIB_REAL_CURRENT / (CURRENT_CALIB_ADC * 100.0);
     } else {
-        status_message.charging_current = -0.2;
+        //we don't know real battery discharge current
+        status_message.battery_current = -0.2;
     }
 }
 
@@ -639,8 +640,8 @@ void loop() {
     }
                 
     if (now - last_status_update_ms > STATUS_CYCLETIME_MS) {
-        status_message.status_bitmask &= ~(1 << STATUS_CHARGING_ALLOWED_BIT);
-        status_message.status_bitmask |= (charging_allowed & 0b1) << STATUS_CHARGING_ALLOWED_BIT;
+        status_message.status_bitmask &= ~(1 << STATUS_CHARGING_BIT);
+        status_message.status_bitmask |= (charging_allowed & 0b1) << STATUS_CHARGING_BIT;
 
         // Check USS timouts
         status_message.status_bitmask &= ~(1 << STATUS_USS_TIMEOUT_BIT);
@@ -673,7 +674,7 @@ void loop() {
         } else {
             readChargerVoltage();
             status_message.v_battery = ant_bms_parser.total_voltage_sensor_;
-            status_message.charging_current = ant_bms_parser.current_sensor_;
+            status_message.battery_current = ant_bms_parser.current_sensor_;
             status_message.batt_percentage = ant_bms_parser.soc_sensor_;
         }
 #endif //BMS_SERIAL
@@ -887,7 +888,7 @@ void updateDisplay(bool forceDisplay) {
     status_line_blink[12]        = status_message.status_bitmask & (1<<STATUS_ESC_ENABLED_BIT) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
     
     //Charging and battery status 12-15 (4 symbols)
-    status_line[13]        = status_message.status_bitmask & (1<<STATUS_CHARGING_ALLOWED_BIT) ? 'C' : ' ';
+    status_line[13]        = status_message.status_bitmask & (1<<STATUS_CHARGING_BIT) ? 'C' : ' ';
     uint8_t batt_percentage = status_message.batt_percentage >= 100 ? 99 : status_message.batt_percentage < 0 ? 0 : status_message.batt_percentage;
     status_line[14]        = '0'+batt_percentage/10;
     status_line[15]        = '0'+batt_percentage%10;
@@ -998,7 +999,7 @@ void updateDisplay(bool forceDisplay) {
     //snprintf(display_line,17, "Main    %.8s",ll_display_emerg);
     //display.drawString(0, 2, display_line);
 
-    snprintf(display_line,17, "V %4.1f %4.1f %4.2f",status_message.v_battery,status_message.v_charge,status_message.charging_current);
+    snprintf(display_line,17, "V %4.1f %4.1f %4.2f",status_message.v_battery,status_message.v_charge,status_message.battery_current);
     display.drawString(0, 4, display_line);
 
     double acceleration = sqrt(imu_message.acceleration_mss[0]*imu_message.acceleration_mss[0]+
