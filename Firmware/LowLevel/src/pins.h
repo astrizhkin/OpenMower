@@ -6,10 +6,11 @@
 #define PIN_IMU_RX 4
 #define PIN_IMU_CS 5
 
+//27 can be used for other purposes if read from bms
 #define PIN_ANALOG_BATTERY_VOLTAGE 27
 #define PIN_ANALOG_CHARGE_VOLTAGE 26
+//28 can be used for other purposes if read from bms
 #define PIN_ANALOG_CHARGE_CURRENT 28
-
 
 #define PIN_ESC_ENABLE 20
 #define PIN_RASPI_POWER 21
@@ -65,6 +66,7 @@
 #define PIN_BMS_TX 8
 #define PIN_BMS_RX 9
 
-//currently unused
+//currently unused. enable pi power?
+#define PIN_UNUSED 10
 //#define PIN_DISPLAY_RESET 10
 
