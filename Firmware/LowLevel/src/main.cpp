@@ -57,7 +57,10 @@
 #endif
 
 #define UPLINK_SERIAL Serial1
+
 #define BMS_SERIAL Serial2
+//SerialPIO bmsSerial(PIN_BMS_TX, PIN_BMS_RX, 250);
+//#define BMS_SERIAL bmsSerial
 
 // Millis after charging is retried
 #define CHARGING_RETRY_MS 10000
@@ -123,7 +126,6 @@ uint8_t display_motor_status_blink[8];
 uint8_t displayUpdateCounter = 0;
 //temp buffer
 char    display_line[16+1]; //16 chars
-
 
 unsigned long last_uss_sensor_result_ms[USS_COUNT];
 unsigned long last_uss_trigger_ms=0;
@@ -438,6 +440,11 @@ void setup() {
     uplinkPacketSerial.setPacketHandler(&onUplinkPacketReceived);
 
 #ifdef BMS_SERIAL    
+    /*if(!BMS_SERIAL.setPinout(PIN_BMS_TX,PIN_BMS_RX)){
+        #ifdef USB_DEBUG
+            DEBUG_SERIAL.println("Unable to set ");
+        #endif
+    }*/
     BMS_SERIAL.begin(19200);
     ant_bms_parser.set_stream(&BMS_SERIAL);
     ant_bms_parser.set_rx_timeout(BMS_RX_TIMEOUT_MS);
@@ -674,7 +681,7 @@ void loop() {
         } else {
             readChargerVoltage();
             status_message.v_battery = ant_bms_parser.total_voltage_sensor_;
-            status_message.battery_current = ant_bms_parser.current_sensor_;
+            status_message.battery_current = -ant_bms_parser.current_sensor_;//reverse current sensor
             status_message.batt_percentage = ant_bms_parser.soc_sensor_;
         }
 #endif //BMS_SERIAL
