@@ -407,7 +407,8 @@ void setup() {
 #ifdef USB_DEBUG
     DEBUG_SERIAL.println("Load font");
 #endif
-    display.setFont(u8x8_font_chroma48medium8_r);
+    display.setFont(mowerfont_u8x8_font_chroma48medium8_r);
+    //display.setFont(u8x8_font_chroma48medium8_r);
     //display.setFont(mowerfont);//capital A - 6
    
     display.drawString(0,0,"Mover v0.1");
