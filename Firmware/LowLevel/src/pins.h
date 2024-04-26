@@ -69,4 +69,5 @@
 //currently unused. enable pi power?
 #define PIN_UNUSED 10
 //#define PIN_DISPLAY_RESET 10
+//#define PIN_LED 25
 

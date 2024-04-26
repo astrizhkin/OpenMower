@@ -321,7 +321,7 @@ void loop1() {
             distance = duration*0.343/2;//0.343mm per 1 microsecond
             response_us = millis()-last_uss_trigger_ms;
             #ifdef USB_DEBUG
-                DEBUG_SERIAL.printf("%i %icm %ius wt %ims rsp %ims\t",mux_address,(int)(distance/10),duration,wait_us/1000,response_us);
+                //DEBUG_SERIAL.printf("%i %icm %ius wt %ims rsp %ims\t",mux_address,(int)(distance/10),duration,wait_us/1000,response_us);
             #endif
         } else {
             state = gpio_get(PIN_MUX_IN);
@@ -369,17 +369,15 @@ void setup() {
     //  Therefore, we pause the other core until setup() was a success
     rp2040.idleOtherCore();
 
-#ifdef USB_DEBUG
-    int wait_count = 500;
-    DEBUG_SERIAL.begin(9600);
-    while(!DEBUG_SERIAL && wait_count-- > 0){
-        delay(10);
-    }
-#endif
-    
-#ifdef USB_DEBUG
-    DEBUG_SERIAL.println("Begin initialization");
-#endif
+    #ifdef USB_DEBUG
+        int wait_count = 500;
+        DEBUG_SERIAL.begin(9600);
+        while(!DEBUG_SERIAL && wait_count-- > 0){
+            delay(10);
+        }
+
+        DEBUG_SERIAL.println("Begin initialization");
+    #endif
 
     lift_emergency_started_ms = 0;
     button_emergency_started_ms = 0;
@@ -398,25 +396,26 @@ void setup() {
     pinMode(PIN_RASPI_POWER,OUTPUT);
     pinMode(PIN_ESC_ENABLE, OUTPUT);
 
+    //Init display I2C
     DISPLAY_WIRE.setSDA(PIN_DISPLAY_SDA);
     DISPLAY_WIRE.setSCL(PIN_DISPLAY_SCK);
-#ifdef USB_DEBUG
-    DEBUG_SERIAL.println("Display init");
-#endif
+    #ifdef USB_DEBUG
+        DEBUG_SERIAL.println("Display init");
+    #endif
     display.begin();
-#ifdef USB_DEBUG
-    DEBUG_SERIAL.println("Load font");
-#endif
-    display.setFont(mowerfont_u8x8_font_chroma48medium8_r);
-    //display.setFont(u8x8_font_chroma48medium8_r);
+    #ifdef USB_DEBUG
+        DEBUG_SERIAL.println("Load font");
+    #endif
+    display.setFont(u8x8_font_chroma48medium8_r);
+    //display.setFont(mowerfont_u8x8_font_chroma48medium8_r);
     //display.setFont(mowerfont);//capital A - 6
    
-    display.drawString(0,0,"Mover v0.1");
+    display.drawString(0,0,"Mover v0.2");
     delay(100);
     // Enable raspi power
-#ifdef USB_DEBUG
-    DEBUG_SERIAL.println("Power RPi & ESC");
-#endif
+    #ifdef USB_DEBUG
+        DEBUG_SERIAL.println("Power RPi & ESC");
+    #endif
     display.drawString(0,1,"Power RPi & ESC");
     delay(100);
     setRaspiPower(true);
@@ -596,12 +595,9 @@ void filtLowPass32(int32_t u, uint16_t coef, int32_t *y) {
   *y = (int32_t)tmp + (*y);
 }
 
-void readBatterySensors() {
-    uint16_t raw = analogRead(PIN_ANALOG_BATTERY_VOLTAGE);
-    filtLowPass32(raw, BAT_FILT_COEF, &batVoltageFixdt);
-    status_message.v_battery = (float)(batVoltageFixdt >> 16) * BAT_CALIB_REAL_VOLTAGE / (BAT_CALIB_ADC * 100.0);
-
+void readBatteryCurrent() {
     if(status_message.v_charge > CHARGE_MIN_VOLT) { //charger powers current sensor. no reason to read unpowered sensor
+        uint16_t raw = analogRead(PIN_ANALOG_BATTERY_VOLTAGE);
         raw = analogRead(PIN_ANALOG_CHARGE_CURRENT);
         filtLowPass32(raw, CURRENT_FILT_COEF, &chargeCurrentFixdt);
         status_message.battery_current = (float)(chargeCurrentFixdt >> 16) * CURRENT_CALIB_REAL_CURRENT / (CURRENT_CALIB_ADC * 100.0);
@@ -610,6 +606,13 @@ void readBatterySensors() {
         status_message.battery_current = -0.2;
     }
 }
+
+void readBatteryVoltage() {
+    uint16_t raw = analogRead(PIN_ANALOG_BATTERY_VOLTAGE);
+    filtLowPass32(raw, BAT_FILT_COEF, &batVoltageFixdt);
+    status_message.v_battery = (float)(batVoltageFixdt >> 16) * BAT_CALIB_REAL_VOLTAGE / (BAT_CALIB_ADC * 100.0);
+}
+
 
 void readChargerVoltage() {
     uint16_t raw = analogRead(PIN_ANALOG_CHARGE_VOLTAGE);
@@ -672,7 +675,8 @@ void loop() {
             status_message.status_bitmask |= 1<<STATUS_BMS_TIMEOUT_BIT;
 #endif //BMS_SERIAL        
             readChargerVoltage();
-            readBatterySensors();
+            readBatteryVoltage();
+            readBatteryCurrent();
 
             // calculate percent value accu filling
             float delta = BAT_FULL - BAT_DISCHARGE_CUT_OFF;
@@ -681,7 +685,8 @@ void loop() {
 #ifdef BMS_SERIAL        
         } else {
             readChargerVoltage();
-            status_message.v_battery = ant_bms_parser.total_voltage_sensor_;
+            readBatteryVoltage();
+            //status_message.v_battery = ant_bms_parser.total_voltage_sensor_;
             status_message.battery_current = -ant_bms_parser.current_sensor_;//reverse current sensor
             status_message.batt_percentage = ant_bms_parser.soc_sensor_;
         }
@@ -789,53 +794,22 @@ void updateBlink(char *message, uint8_t *blinkState, int size,int currentBlinkCo
     }
 }
 
-void updateDisplay(bool forceDisplay) {
-    long now = millis();
-
-    displayUpdateCounter++;
-    if(displayUpdateCounter & DISPLAY_BLINK_CYCLE) {
-        displayUpdateCounter = 0;
-    }                                         
-
-    // Show Info Docking LED
-    /*if ((status_message.charging_current > 0.80f) && (status_message.v_charge > 20.0f))
-        setLed(leds_message, LED_CHARGING, LED_blink_fast);
-    else if ((status_message.charging_current <= 0.80f) && (status_message.charging_current >= 0.15f) &&
-             (status_message.v_charge > 20.0f))
-        setLed(leds_message, LED_CHARGING, LED_blink_slow);
-    else if ((status_message.charging_current < 0.15f) && (status_message.v_charge > 20.0f))
-        setLed(leds_message, LED_CHARGING, LED_on);
-    else
-        setLed(leds_message, LED_CHARGING, LED_off);
-    // Show Info Battery state
-    if (status_message.v_battery >= (BATT_EMPTY + 2.0f))
-        setLed(leds_message, LED_BATTERY_LOW, LED_off);
-    else
-        setLed(leds_message, LED_BATTERY_LOW, LED_on);
-    if (status_message.v_charge < 10.0f) // activate only when undocked
-    {
-        // use the first LED row as bargraph
-        setBars7(leds_message, status_message.batt_percentage / 100.0);
-    } else {
-        setBars7(leds_message, 0);
-        setBars4(leds_message, 0);
-    }*/
-
-    //High level group 0-4 (5 symbols)
-    //Communication heartbit status
+void updateDisplayLine1(uint32_t now_ms) {
+    uint32_t high_level_age_ms = now_ms - last_high_level_ms;
+    
     status_line[0]         = emergency_high_level!=0 ? 'E' : 'T';
     status_line_blink[0]   = status_message.emergency_bitmask & (1<<EMERGENCY_ROS_TIMEOUT) ? DISPLAY_SLOW_BLINK : emergency_high_level!=0 ? DISPLAY_FAST_BLINK : DISPLAY_NO_BLINK;
 
     //GPS status
-    status_line[1]         = now - last_high_level_ms < HIGH_LEVEL_TIMEOUT_MS ? 'G' : 'g';
-    if ( (now - last_high_level_ms) > HIGH_LEVEL_TIMEOUT_MS) { status_line_blink[1]=DISPLAY_SLOW_BLINK; }
+    status_line[1]         = high_level_age_ms < HIGH_LEVEL_TIMEOUT_MS ? 'G' : 'g';
+    if ( high_level_age_ms > HIGH_LEVEL_TIMEOUT_MS) { status_line_blink[1]=DISPLAY_SLOW_BLINK; }
     else if (last_high_level_state.gps_quality < 25) { status_line_blink[1]=DISPLAY_FAST_BLINK; }
     else if (last_high_level_state.gps_quality < 50) { status_line_blink[1]=DISPLAY_NORM_BLINK; }
     else if (last_high_level_state.gps_quality < 75) { status_line_blink[1]=DISPLAY_SLOW_BLINK; }
     else { status_line_blink[1]=DISPLAY_NO_BLINK; }
 
     //High level mode status
-    if(now - last_high_level_ms < HIGH_LEVEL_TIMEOUT_MS) {
+    if(high_level_age_ms < HIGH_LEVEL_TIMEOUT_MS) {
         uint8_t highLevelMode = last_high_level_state.current_mode & 0b111111;
         uint8_t highLevelSubMode = (last_high_level_state.current_mode >> 6) & 0b11;
         switch (highLevelMode) {
@@ -906,21 +880,9 @@ void updateDisplay(bool forceDisplay) {
 
     snprintf(display_line,17, "%.16s",status_line);
     display.drawString(0, 0, display_line);
+}
 
-    //ll_display_emerg[0]         = ' ';//status_message.emergency_bitmask & (1<<EMERGENCY_BATTERY_EMPTY_BIT) ? 'V' : ' ';
-    //ll_display_emerg[1]         = ' ';//status_message.emergency_bitmask & (1<<EMERGENCY_IMU_BIT) ? 'I' : ' ';
-    //ll_display_emerg[2]         = ' ';//status_message.emergency_bitmask & (1<<EMERGENCY_USS_BIT) ? 'U' : ' ';
-    //ll_display_emerg[3]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT2_BIT) ? 'L' : ' ';
-    //ll_display_emerg[4]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT1_BIT) ? 'L' : ' ';
-    //ll_display_emerg[5]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON2_BIT) ? 'B' : ' ';
-    //ll_display_emerg[6]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON1_BIT) ? 'B' : ' ';
-    //ll_display_emerg[7]         = status_message.emergency_bitmask & (1<<EMERGENCY_LATCH_BIT) ? 'E' : '0';
-    //updateBlink(ll_display_emerg,ll_display_emerg_blink,8,displayUpdateCounter);
-
-    //snprintf(display_line,17, "LL Emer %.8s",ll_display_emerg);
-    //display.drawString(0, 2, display_line);
-
-    // Rear motor
+void updateDisplayLine2(uint32_t now_ms){
     display_motor_status[0]       = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD | 1<<MOTOR_STATUS_BATTERY_L1  | 1<<MOTOR_STATUS_BATTERY_L2) ? 'V' : ' ';
     display_motor_status_blink[0] = last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_DEAD) ? DISPLAY_FAST_BLINK : last_motor_state.status[0] & (1<<MOTOR_STATUS_BATTERY_L1) ? DISPLAY_NORM_BLINK : DISPLAY_SLOW_BLINK;
     display_motor_status[1]       = last_motor_state.status[0] & (1<<MOTOR_STATUS_GEN_TIMEOUT) ? 'G' : last_motor_state.status[0] & (1<<MOTOR_STATUS_ADC_TIMEOUT) ? 'A' : ' ';
@@ -937,8 +899,8 @@ void updateDisplay(bool forceDisplay) {
     display_motor_status_blink[6] = last_motor_state.status[0] & (1<<MOTOR_STATUS_BAD_CTRL_MODE) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
     display_motor_status[7]       = 'D';//drive on/disabled blink
     display_motor_status_blink[7] = last_motor_state.status[0] & (1<<MOTOR_STATUS_DISABLED) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
-    if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[0]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
-        if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
+    if(now_ms - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[0]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
+        if(now_ms - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
             memcpy(display_motor_status," NO DATA",8);
         }
         for(int i=0;i<8;i++) display_motor_status_blink[i]=DISPLAY_SLOW_BLINK;
@@ -947,8 +909,9 @@ void updateDisplay(bool forceDisplay) {
 
     snprintf(display_line,17, "Rear    %.8s",display_motor_status);
     display.drawString(0, 1, display_line);
+}
 
-    // Front motor
+void updateDisplayLine3(uint32_t now_ms) {
     display_motor_status[0]       = last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_DEAD | 1<<MOTOR_STATUS_BATTERY_L1  | 1<<MOTOR_STATUS_BATTERY_L2) ? 'V' : ' ';
     display_motor_status_blink[0] = last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_DEAD) ? DISPLAY_FAST_BLINK : last_motor_state.status[1] & (1<<MOTOR_STATUS_BATTERY_L1) ? DISPLAY_NORM_BLINK : DISPLAY_SLOW_BLINK;
     display_motor_status[1]       = last_motor_state.status[1] & (1<<MOTOR_STATUS_GEN_TIMEOUT) ? 'G' : last_motor_state.status[1] & (1<<MOTOR_STATUS_ADC_TIMEOUT) ? 'A' : ' ';
@@ -965,8 +928,8 @@ void updateDisplay(bool forceDisplay) {
     display_motor_status_blink[6] = last_motor_state.status[1] & (1<<MOTOR_STATUS_BAD_CTRL_MODE) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
     display_motor_status[7]       = 'D';//drive on/disabled blink
     display_motor_status_blink[7] = last_motor_state.status[1] & (1<<MOTOR_STATUS_DISABLED) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
-    if( now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[1]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
-        if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
+    if( now_ms - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[1]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
+        if(now_ms - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
             memcpy(display_motor_status," NO DATA",8);
         }
         for(int i=0;i<8;i++) display_motor_status_blink[i]=DISPLAY_SLOW_BLINK;
@@ -975,8 +938,9 @@ void updateDisplay(bool forceDisplay) {
 
     snprintf(display_line,17, "Front   %.8s",display_motor_status);
     display.drawString(0, 2, display_line);
+}
 
-    // Mower motor
+void updateDisplayLine4(uint32_t now_ms) {
     display_motor_status[0]       = last_motor_state.status[2] & (XESC_FAULT_OVERVOLTAGE | XESC_FAULT_UNDERVOLTAGE)? 'V' : ' ';
     display_motor_status_blink[0] = last_motor_state.status[2] & XESC_FAULT_OVERVOLTAGE ? DISPLAY_FAST_BLINK : DISPLAY_SLOW_BLINK;
     display_motor_status[1]       = last_motor_state.status[2] & XESC_FAULT_OVERCURRENT ? 'A' : ' ';
@@ -993,8 +957,8 @@ void updateDisplay(bool forceDisplay) {
     display_motor_status_blink[6] = DISPLAY_FAST_BLINK;
     display_motor_status[7]       = 'D';//drive on/disabled blink
     display_motor_status_blink[7] = last_motor_state.status[2] != 0 ? DISPLAY_FAST_BLINK : DISPLAY_NO_BLINK;
-    if( now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[2]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
-        if(now - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
+    if( now_ms - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS || last_motor_state.status_age_s[2]*1000 > MOTOR_STATUS_TIMEOUT_MS) {
+        if(now_ms - last_motor_ms > MOTOR_STATUS_TIMEOUT_MS) {
             memcpy(display_motor_status," NO DATA",8);
         }
         for(int i=0;i<8;i++) display_motor_status_blink[i]=DISPLAY_SLOW_BLINK;
@@ -1003,19 +967,80 @@ void updateDisplay(bool forceDisplay) {
 
     snprintf(display_line,17, "Mow     %.8s",display_motor_status);
     display.drawString(0, 3, display_line);
+}
 
-    //snprintf(display_line,17, "Main    %.8s",ll_display_emerg);
-    //display.drawString(0, 2, display_line);
-
+void updateDisplayLine5(uint32_t now_ms) {
     snprintf(display_line,17, "V %4.1f %4.1f %4.2f",status_message.v_battery,status_message.v_charge,status_message.battery_current);
     display.drawString(0, 4, display_line);
+}
 
+void updateDisplayLine6(uint32_t now_ms) {
     double acceleration = sqrt(imu_message.acceleration_mss[0]*imu_message.acceleration_mss[0]+
                                imu_message.acceleration_mss[1]*imu_message.acceleration_mss[1]+
                                imu_message.acceleration_mss[2]*imu_message.acceleration_mss[2]);
     double gyro = abs(imu_message.gyro_rads[0]) + abs(imu_message.gyro_rads[1]) + abs(imu_message.gyro_rads[2]);
     snprintf(display_line,17, "X %4.1f G %4.1f   ",acceleration,gyro);
     display.drawString(0, 5, display_line);
+}
+
+void updateDisplayLine78(uint32_t now_ms) {
+    snprintf(display_line,17, "USS %3d %3d %3d",(int)(status_message.uss_ranges_m[0]*100),(int)(status_message.uss_ranges_m[1]*100),(int)(status_message.uss_ranges_m[2]*100));
+    display.drawString(0, 6, display_line);
+
+    snprintf(display_line,17, "USS %3d %3d",(int)(status_message.uss_ranges_m[3]*100),(int)(status_message.uss_ranges_m[4]*100));
+    display.drawString(0, 7, display_line);
+}
+
+void updateDisplay(bool forceDisplay) {
+    uint32_t now_ms = millis();
+
+    displayUpdateCounter++;
+    if(displayUpdateCounter & DISPLAY_BLINK_CYCLE) {
+        displayUpdateCounter = 0;
+    }                                         
+
+    // Show Info Docking LED
+    /*if ((status_message.charging_current > 0.80f) && (status_message.v_charge > 20.0f))
+        setLed(leds_message, LED_CHARGING, LED_blink_fast);
+    else if ((status_message.charging_current <= 0.80f) && (status_message.charging_current >= 0.15f) &&
+             (status_message.v_charge > 20.0f))
+        setLed(leds_message, LED_CHARGING, LED_blink_slow);
+    else if ((status_message.charging_current < 0.15f) && (status_message.v_charge > 20.0f))
+        setLed(leds_message, LED_CHARGING, LED_on);
+    else
+        setLed(leds_message, LED_CHARGING, LED_off);
+    // Show Info Battery state
+    if (status_message.v_battery >= (BATT_EMPTY + 2.0f))
+        setLed(leds_message, LED_BATTERY_LOW, LED_off);
+    else
+        setLed(leds_message, LED_BATTERY_LOW, LED_on);
+    if (status_message.v_charge < 10.0f) // activate only when undocked
+    {
+        // use the first LED row as bargraph
+        setBars7(leds_message, status_message.batt_percentage / 100.0);
+    } else {
+        setBars7(leds_message, 0);
+        setBars4(leds_message, 0);
+    }*/
+
+    //High level group 0-4 (5 symbols)
+    //Communication heartbit status
+    updateDisplayLine1(now_ms);
+
+    // Rear motor
+    updateDisplayLine2(now_ms);
+
+    // Front motor
+    updateDisplayLine3(now_ms);
+
+    // Mower motor
+    updateDisplayLine4(now_ms);
+
+    //snprintf(display_line,17, "Main    %.8s",ll_display_emerg);
+    //display.drawString(0, 2, display_line);
+    updateDisplayLine5(now_ms);
+
+    updateDisplayLine6(now_ms);
 
     //snprintf(display_line,17, "ADC %d %d ",batteryADCRaw,chargerADCRaw);
     //display.drawString(0, 6, display_line);
@@ -1023,11 +1048,11 @@ void updateDisplay(bool forceDisplay) {
     //snprintf(display_line,17, "ADC %d       ",currentADCRaw);
     //display.drawString(0, 7, display_line);
 
-    snprintf(display_line,17, "USS %3d %3d %3d",(int)(status_message.uss_ranges_m[0]*100),(int)(status_message.uss_ranges_m[1]*100),(int)(status_message.uss_ranges_m[2]*100));
-    display.drawString(0, 6, display_line);
+    updateDisplayLine78(now_ms);
 
-    snprintf(display_line,17, "USS %3d %3d",(int)(status_message.uss_ranges_m[3]*100),(int)(status_message.uss_ranges_m[4]*100));
-    display.drawString(0, 7, display_line);
+    #ifdef USB_DEBUG
+        DEBUG_SERIAL.printf("Update display %dms\n",millis()-now_ms);
+    #endif
 }
 
 /*void setUSSChars(int distance, char *c1,char *c2, bool up) {

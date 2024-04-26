@@ -288,6 +288,7 @@ void AntBms::on_status_data_(const uint8_t *data, size_t size) {
 }
 
 void AntBms::update() {
+  logFunc_(ESPHOME_LOG_LEVEL_DEBUG, "ANT BMS start update");
   this->read_registers_();
 }
 
