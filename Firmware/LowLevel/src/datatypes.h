@@ -126,6 +126,9 @@ typedef enum XescFaultCode {
     #define BAT_DISCHARGE_CUT_OFF (2.40 * BAT_CELLS)  // empty. Cut off!
 #endif
 
+#define BAT_SOC_START_CHARGE 85                       // start charge if SOC <
+#define BAT_SOC_STOP_CHARGE 95                       // start charge if SOC >
+
 #define CHARGE_MAX_VOLT         (4.35 * BAT_CELLS)    // Charger max voltage limit
 #define CHARGE_MIN_VOLT         5.0                   // Charger min voltage limit
 

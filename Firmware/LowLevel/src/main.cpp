@@ -539,7 +539,9 @@ bool checkShouldStartCharge() {
     return status_message.v_battery < status_message.v_charge
         && status_message.v_charge < CHARGE_MAX_VOLT 
         && status_message.v_charge > CHARGE_MIN_VOLT 
-        && status_message.v_battery < BAT_OK_START_CHARGE;
+        && (ant_bms_parser.is_online() 
+                ? status_message.batt_percentage < BAT_SOC_START_CHARGE 
+                : status_message.v_battery < BAT_OK_START_CHARGE);
 }
 
 bool checkShouldStopCharge() {
@@ -547,7 +549,9 @@ bool checkShouldStopCharge() {
         || status_message.v_charge > CHARGE_MAX_VOLT 
         || status_message.v_charge < CHARGE_MIN_VOLT 
         //|| status_message.charging_current < 0.5
-        || status_message.v_battery > BAT_CHARGE_STOP;
+        || (ant_bms_parser.is_online() 
+                ? status_message.batt_percentage > BAT_SOC_STOP_CHARGE 
+                : status_message.v_battery > BAT_CHARGE_STOP);
 }
 
 void updateChargingEnabled() {
