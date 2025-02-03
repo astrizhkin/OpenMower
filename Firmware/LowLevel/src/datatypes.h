@@ -3,7 +3,8 @@
 //
 // This work is licensed under a Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
 //
-// Feel free to use the design in your private/educational projects, but don't try to sell the design or products based on it without getting my consent first.
+// Feel free to use the design in your private/educational projects, but don't try to sell the design or products based
+// on it without getting my consent first.
 //
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -23,6 +24,9 @@
 #define PACKET_ID_LL_STATUS 1
 #define PACKET_ID_LL_IMU 2
 #define PACKET_ID_LL_UI_EVENT 3
+#define PACKET_ID_LL_HIGH_LEVEL_CONFIG_GET 0x10  // ll_high_level_config read value result
+#define PACKET_ID_LL_HIGH_LEVEL_CONFIG_SET 0x11  // ll_high_level_config set value result
+#define PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR 0x12  // ll_high_level_config invalid address
 #define PACKET_ID_LL_HEARTBEAT 0x42
 #define PACKET_ID_LL_HIGH_LEVEL_STATE 0x43
 #define PACKET_ID_LL_MOTOR_STATE 0x44
@@ -45,10 +49,10 @@ typedef enum StatusBits {
     STATUS_BMS_TIMEOUT_BIT = 8
 } StatusBits;
 
-#define EMERGENCY_BUTTON1_BIT 1
-#define EMERGENCY_BUTTON2_BIT 2
-#define EMERGENCY_LIFT1_BIT 3
-#define EMERGENCY_LIFT2_BIT 4
+#define EMERGENCY_CONTACT1_BIT 1 //primary emergency button
+#define EMERGENCY_CONTACT2_BIT 2
+#define EMERGENCY_CONTACT3_BIT 3
+#define EMERGENCY_CONTACT4_BIT 4
 #define EMERGENCY_ROS_TIMEOUT 5
 #define EMERGENCY_HIGH_LEVEL 6
 
@@ -71,6 +75,12 @@ typedef enum StatusBits {
 #define MOTOR_STATUS_BATTERY_L1             13
 #define MOTOR_STATUS_BATTERY_L2             14
 
+#define DISPLAY_NO_BLINK    0b0000
+#define DISPLAY_FAST_BLINK  0b0001
+#define DISPLAY_NORM_BLINK  0b0010
+#define DISPLAY_SLOW_BLINK  0b0100
+#define DISPLAY_BLINK_CYCLE 0b1000
+
 //XESC fault codes
 typedef enum XescFaultCode {
     XESC_FAULT_UNINITIALIZED=1,
@@ -80,7 +90,9 @@ typedef enum XescFaultCode {
     XESC_FAULT_OVERCURRENT=16,
     XESC_FAULT_OVERTEMP_MOTOR=32,
     XESC_FAULT_OVERTEMP_PCB=64,
-    XESC_FAULT_INVALID_HALL=128
+    XESC_FAULT_INVALID_HALL=128,
+    XESC_FAULT_INTERNAL_ERROR=256,
+    XESC_FAULT_OPEN_LOAD=512
 } XescFaultCode;
 
 // ############################### BATTERY ###############################
@@ -94,43 +106,6 @@ typedef enum XescFaultCode {
 #define BAT_CALIB_REAL_VOLTAGE  4160      // input voltage measured by multimeter (multiplied by 100). In this case 41.60 V * 100 = 4160
 #define BAT_CALIB_ADC           3325      // adc-value measured by mainboard (value nr 5 on UART debug output)
 
-#define BAT_LIFEPO4                         //battry type BAT_LIION or BAT_LIFEPO4
-
-#ifdef BAT_LIION
-    #define BAT_CELLS               10        // battery number of cells. Normal Hoverboard battery: 10s
-
-    #define BAT_CHARGE_IN_MAX   (4.30 * BAT_CELLS)    // Charger voltage input limit
-    #define BAT_CHARGE_CUT_OFF  (4.20 * BAT_CELLS)    // Charge cut-off voltage
-    #define BAT_CHARGE_BALANCE  (4.175 * BAT_CELLS)   // Charge equalization voltage
-    #define BAT_CHARGE_STOP     (4.15 * BAT_CELLS)    // Normal stop charge
-    #define BAT_FULL            (4.10 * BAT_CELLS)    // Full right after charge
-    #define BAT_OK_START_CHARGE (4.05 * BAT_CELLS)    // ok
-    #define BAT_WARN1           (3.70 * BAT_CELLS)    // warning 1
-    #define BAT_WARN2           (3.60 * BAT_CELLS)    // warning 2
-    #define BAT_WARN3           (3.50 * BAT_CELLS)    // almost empty. Charge now!
-    #define BAT_DISCHARGE_CUT_OFF (3.37 * BAT_CELLS)    // empty
-#endif
-
-#ifdef BAT_LIFEPO4
-    #define BAT_CELLS               12        // battery number of cells
-
-    #define BAT_CHARGE_IN_MAX   (3.75 * BAT_CELLS)    // Charger voltage input limit
-    #define BAT_CHARGE_CUT_OFF  (3.65 * BAT_CELLS)    // Charge cut-off voltage
-    #define BAT_CHARGE_BALANCE  (3.60 * BAT_CELLS)    // Charge equalization voltage
-    #define BAT_CHARGE_STOP     (3.55 * BAT_CELLS)    // Normal stop charge
-    #define BAT_FULL            (3.45 * BAT_CELLS)    // Full right after charge
-    #define BAT_OK_START_CHARGE (3.30 * BAT_CELLS)    // ok
-    #define BAT_WARN1           (2.70 * BAT_CELLS)    // warning 1
-    #define BAT_WARN2           (2.60 * BAT_CELLS)    // warning 2
-    #define BAT_WARN3           (2.50 * BAT_CELLS)    // almost empty. Charge now!
-    #define BAT_DISCHARGE_CUT_OFF (2.40 * BAT_CELLS)  // empty. Cut off!
-#endif
-
-#define BAT_SOC_START_CHARGE 85                       // start charge if SOC <
-#define BAT_SOC_STOP_CHARGE 95                       // start charge if SOC >
-
-#define CHARGE_MAX_VOLT         (4.35 * BAT_CELLS)    // Charger max voltage limit
-#define CHARGE_MIN_VOLT         5.0                   // Charger min voltage limit
 
 #define CHARGE_FILT_COEF           6553 //0.1 * 2^16
 #define CHARGE_CALIB_REAL_VOLTAGE  4140
@@ -141,6 +116,9 @@ typedef enum XescFaultCode {
 #define CURRENT_CALIB_ADC           275
 
 // ######################## END OF BATTERY ###############################
+
+#define USS_COUNT 5
+#define CONTACT_COUNT 4
 
 #pragma pack(push, 1)
 struct ll_status {
@@ -157,9 +135,11 @@ struct ll_status {
     // Bit 7: don't care
     uint16_t status_bitmask;
     // USS range in m
-    float uss_ranges_m[5];
+    float uss_ranges_m[USS_COUNT];
     // USS measurement age in ms (no more than UINT16_MAX)
-    uint16_t uss_age_ms[5];
+    uint16_t uss_age_ms[USS_COUNT];
+    //contact active after timeout
+    uint8_t contacts;
     // Emergency bitmask:
     // Bit 0: Emergency latch
     // Bit 1: Emergency 0 active
@@ -183,15 +163,15 @@ struct ll_status {
 
 #pragma pack(push, 1)
 struct ll_imu {
-    // Type of this message. Has to be PACKET_ID_LL_IMU.
-    uint8_t type;
-    // Time since last message in milliseconds.
-    uint16_t dt_millis;
-    // Acceleration[m^s2], Gyro[rad/s] and magnetic field[uT]
-    float acceleration_mss[3];
-    float gyro_rads[3];
-    float mag_uT[3];
-    uint16_t crc;
+  // Type of this message. Has to be PACKET_ID_LL_IMU.
+  uint8_t type;
+  // Time since last message in milliseconds.
+  uint16_t dt_millis;
+  // Acceleration[m^s2], Gyro[rad/s] and magnetic field[uT]
+  float acceleration_mss[3];
+  float gyro_rads[3];
+  float mag_uT[3];
+  uint16_t crc;
 } __attribute__((packed));
 #pragma pack(pop)
 
@@ -208,17 +188,17 @@ struct ll_heartbeat {
 
 #pragma pack(push, 1)
 struct ll_high_level_state {
-    // Type of this message. Has to be PACKET_ID_LL_HIGH_LEVEL_STATE
-    uint8_t type;
-    uint8_t current_mode; // see HighLevelMode
-    uint8_t gps_quality;   // GPS quality in percent (0-100)
-    uint16_t crc;
+  // Type of this message. Has to be PACKET_ID_LL_HIGH_LEVEL_STATE
+  uint8_t type;
+  uint8_t current_mode;  // see HighLevelMode
+  uint8_t gps_quality;   // GPS quality in percent (0-100)
+  uint16_t crc;
 } __attribute__((packed));
 #pragma pack(pop)
 
 #pragma pack(push, 1)
 struct ll_motor_state {
-    // Type of this message. Has to be PACKET_ID_LL_HIGH_LEVEL_STATE
+    // Type of this message. Has to be PACKET_ID_LL_MOTOR_STATE
     uint8_t type;
     //uint8_t motor_id;
 
@@ -237,14 +217,72 @@ struct ll_motor_state {
 } __attribute__((packed));
 #pragma pack(pop)
 
+enum class ConfigAddress : uint8_t {
+  //control group (10)
+  SAVE = 0, //bool
+  LOAD = 1, //bool
+
+  //charge group (10)
+  CHARGE_START_SOC = 10, //int percent, 0 - disable
+  CHARGE_START_VOLTAGE = 11,//float volt, 0 - disable
+  CHARGE_STOP_SOC = 12,  //int percent, 0 - disable
+  CHARGE_STOP_VOLTAGE = 13,//float volt, 0 - disable
+  CHARGE_STOP_CURRENT = 14,//float current, 0 - disable
+  CHARGE_MAX_CURRENT = 15,//float current, 0 - disable
+  CHARGER_MAX_VOLTAGE = 16,//float volt, 0 - disable
+  CHARGER_MIN_VOLTAGE = 17,//float volt, 0 - disable
+
+
+  //battery group (10)
+  BATTERY_EMPTY_VOLTAGE = 20,//float current, 0 - disable
+  BATTERY_FULL_VOLTAGE = 21,//float current, 0 - disable
+  BATTERY_LOW_WARNING_SOC = 22,//int percent, 0 - disable
+  BATTERY_LOW_WARNING_VOLTAGE = 23,//float current, 0 - disable
+  BATTERY_SHUTDOWN_SOC = 24,//int percent, 0 - disable
+  BATTERY_SHUTDOWN_VOLTAGE = 25,//float current, 0 - disable
+
+  //contact group (4x8)
+  CONTACT_MODE = 30,//ContactMode, address2 is requred
+  CONTACT_ACTIVE_LOW = 31,//bool, address2 is requred
+  CONTACT_TIMEOUT = 32,//bool, address2 is requred
+
+  //uss group (4x8)
+  USS_ACTIVE = 30+32,//bool, address2 is requred
+
+  //end
+  END = 30+32+32
+};
+
+enum ContactMode {
+  OFF = 0,
+  MONITOR = 1,  // Contact output
+  EMERGENCY_STOP = 2, // Emergeny bit and contact output
+};
+
+union ConfigValue {
+//  double doubleValue;
+  float floatValue;
+  uint32_t uint32Value;
+  int32_t int32Value;
+  uint16_t uint16Value;
+  int16_t int16Value;
+  uint8_t uint8Value;
+  int8_t int8Value;
+  char charValue;
+  bool boolValue;
+};
+
+// LL/HL config packet, bi-directional, flexible-length
+#pragma pack(push, 1)
+struct ll_high_level_config {
+  // PACKET_ID_LL_HIGH_LEVEL_CONFIG_*
+  uint8_t type;
+  ConfigAddress address;
+  uint8_t address2;//4 bits actually
+  ConfigValue value;
+  uint16_t crc;
+  // clang-format on
+} __attribute__((packed));
+#pragma pack(pop)
+
 #endif
-
-#define DISPLAY_NO_BLINK    0b0000
-#define DISPLAY_FAST_BLINK  0b0001
-#define DISPLAY_NORM_BLINK  0b0010
-#define DISPLAY_SLOW_BLINK  0b0100
-#define DISPLAY_BLINK_CYCLE 0b1000
-
-
-
-

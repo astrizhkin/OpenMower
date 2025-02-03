@@ -17,6 +17,7 @@
 #include <Arduino.h>
 #include <FastCRC.h>
 #include <PacketSerial.h>
+#include <EEPROM.h>
 #include "datatypes.h"
 #include "defines.h"
 #include "pins.h"
@@ -29,11 +30,7 @@
 
 #define IMU_CYCLETIME_MS 20              // cycletime for refresh IMU data
 #define STATUS_CYCLETIME_MS 100          // cycletime for refresh analog and digital Statusvalues
-#define DISPLAY_CYCLETIME_MS 200      // cycletime for refresh UI status LEDs
-
-#define TILT_EMERGENCY_MS 2500  // Time for a single wheel to be lifted in order to count as emergency. This is to filter uneven ground.
-#define LIFT_EMERGENCY_MS 100  // Time for both wheels to be lifted in order to count as emergency. This is to filter uneven ground.
-#define BUTTON_EMERGENCY_MS 20 // Time for button emergency to activate. This is to debounce the button if triggered on bumpy surfaces
+#define DISPLAY_CYCLETIME_MS 200        // cycletime for refresh UI display
 
 // Emergency will be engaged, if no heartbeat was received in this time frame.
 #define HEARTBEAT_TIMEOUT_MS 500
@@ -42,8 +39,6 @@
 #define IMU_TIMEOUT_MS 200
 
 #define USS_TIMEOUT_MS 1000
-#define USS_COUNT 5
-#define USS_ENABLED 0b11000
 #define USS_CYCLETIME_MS 50
 #define USS_ECHO_TIMEOUT_US 50000UL
 
@@ -83,16 +78,17 @@ FastCRC16 CRC16;
     unsigned long last_bms_update_ms = 0;
 #endif
 
-unsigned long last_imu_ms = 0;
-unsigned long last_status_update_ms = 0;
-unsigned long last_heartbeat_ms = 0;
-unsigned long last_high_level_ms = 0;
-unsigned long last_motor_ms = 0;
-unsigned long last_display_ms = 0;
+uint32_t last_imu_ms = 0;
+uint32_t last_status_update_ms = 0;
+uint32_t last_heartbeat_ms = 0;
+uint32_t last_high_level_ms = 0;
+uint32_t last_motor_ms = 0;
+uint32_t last_display_ms = 0;
+uint8_t last_display_line = 7;
 
-unsigned long lift_emergency_started_ms = 0;
-unsigned long tilt_emergency_started_ms = 0;
-unsigned long button_emergency_started_ms = 0;
+uint32_t contact_started_ms[CONTACT_COUNT] = {0,0,0,0};
+bool contact_pins[CONTACT_COUNT] = {PIN_EMERGENCY_1,PIN_EMERGENCY_2,PIN_EMERGENCY_3,PIN_EMERGENCY_4};
+uint8_t contact_emergency_bits[CONTACT_COUNT] = {EMERGENCY_CONTACT1_BIT,EMERGENCY_CONTACT2_BIT,EMERGENCY_CONTACT3_BIT,EMERGENCY_CONTACT4_BIT};
 
 // Predefined message buffers, so that we don't need to allocate new ones later.
 struct ll_imu imu_message = {0};
@@ -110,7 +106,7 @@ uint8_t emergency_high_level = 0;
 auto_init_mutex(mtx_status_message);
 
 bool charging_allowed = false;
-unsigned long charging_disabled_time = 0;
+uint32_t charging_disabled_time = 0;
 
 float imu_temp[9];
 
@@ -127,10 +123,36 @@ uint8_t displayUpdateCounter = 0;
 //temp buffer
 char    display_line[16+1]; //16 chars
 
-unsigned long last_uss_sensor_result_ms[USS_COUNT];
-unsigned long last_uss_trigger_ms=0;
-static int32_t batVoltageFixdt  = (400 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE << 16;  // Fixed-point filter output initialized at 400 V*100/cell = 4 V/cell converted to fixed-point
-static int32_t chargeVoltageFixdt  = (0 * BAT_CELLS * CHARGE_CALIB_ADC) / CHARGE_CALIB_REAL_VOLTAGE << 16;  // Fixed-point filter output initialized at 0V converted to fixed-point
+//configuration parameters
+uint8_t conf_charge_start_soc = 0;
+float conf_charge_start_voltage = 0;//BAT_OK_START_CHARGE
+
+uint8_t conf_charge_stop_soc = 0;
+float conf_charge_stop_voltage = 0;//BAT_CHARGE_STOP
+
+float conf_charge_max_current = 0;
+float conf_charge_stop_current = 0;
+
+float conf_charger_max_voltage = 0;
+float conf_charger_min_voltage = 0;
+
+float conf_battery_full_voltage = 0;//BAT_FULL
+float conf_battery_empty_voltage = 0;//BAT_DISCHARGE_CUT_OFF
+
+uint8_t conf_battery_shutdown_soc = 0;
+float conf_battery_shutdown_voltage = 0;//BAT_WARN3
+
+uint8_t conf_uss_enabled[USS_COUNT] = {false,false,false,false,false};
+bool conf_contact_active_low[CONTACT_COUNT] = {true,true,true,true};
+uint8_t conf_contact_mode[CONTACT_COUNT] = {ContactMode::OFF,ContactMode::OFF,ContactMode::OFF,ContactMode::OFF};
+uint8_t conf_contact_timeout_ms[CONTACT_COUNT] = {20,20,20,20};
+
+bool conf_valid;
+
+uint32_t last_uss_sensor_result_ms[USS_COUNT];
+uint32_t last_uss_trigger_ms=0;
+static int32_t batVoltageFixdt  = (4000 * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE << 16;  // Fixed-point filter output initialized at 40V converted to fixed-point
+static int32_t chargeVoltageFixdt  = (0 * CHARGE_CALIB_ADC) / CHARGE_CALIB_REAL_VOLTAGE << 16;  // Fixed-point filter output initialized at 0V converted to fixed-point
 static int32_t chargeCurrentFixdt  = (0 * CURRENT_CALIB_ADC) / CURRENT_CALIB_REAL_CURRENT << 16;  // Fixed-point filter output initialized at 0 amps converted to fixed-point
 
 #define DISPLAY_WIRE Wire
@@ -138,7 +160,7 @@ U8X8_SSD1309_128X64_NONAME0_HW_I2C display(U8X8_PIN_NONE);
 //U8G2_SSD1309_128X64_NONAME0_2_HW_I2C display(U8G2_R0, PIN_DISPLAY_RESET, PIN_DISPLAY_SCK, PIN_DISPLAY_SDA);
 
 void sendUplinkMessage(void *message, size_t size);
-void updateDisplay(bool forceDisplay);
+void updateDisplay(uint32_t now_ms);
 void updateBlinkState(char *message, uint8_t blinkState, int size, int currentBlinkState);
 void onUplinkPacketReceived(const uint8_t *buffer, size_t size);
 
@@ -173,7 +195,7 @@ void updateEmergency() {
     uint8_t last_emergency_low_leve_state = status_message.emergency_bitmask;
     uint8_t emergency_low_level_state = 0;
 
-    unsigned long now = millis();
+    uint32_t now = millis();
     if (now - last_heartbeat_ms > HEARTBEAT_TIMEOUT_MS) {
         emergency_low_level_state |= 1<<EMERGENCY_ROS_TIMEOUT;
     }
@@ -181,76 +203,34 @@ void updateEmergency() {
         emergency_low_level_state |= 1<<EMERGENCY_HIGH_LEVEL;
     }
 
-    // Mask the emergency bits. 2x Lift sensor, 2x Emergency Button
-    bool emergency1 = !gpio_get(PIN_EMERGENCY_1);
-    bool emergency2 = !gpio_get(PIN_EMERGENCY_2);
-    bool emergency3 = !gpio_get(PIN_EMERGENCY_3);
-    bool emergency4 = !gpio_get(PIN_EMERGENCY_4);
+    // Check contact and set emergency or contact bits.
+    for(int i=0;i<CONTACT_COUNT;i++) {
+        if(conf_contact_mode[i]==ContactMode::OFF) {
+            continue;
+        }
+        bool contact = gpio_get(contact_pins[i]) ^ conf_contact_active_low[i];
+        if(contact) {
+            if(contact_started_ms[i]==0){
+                contact_started_ms[i] = now;
+            }
+        } else {
+            contact_started_ms[i] = 0;
+            status_message.contacts &= ~ (1<<i);
+        }
+        if(contact_started_ms[i] > 0 && (now - contact_started_ms[i]) >= conf_contact_timeout_ms[i]){
+            //real event
+            if(conf_contact_mode[i]==ContactMode::EMERGENCY_STOP) {
+                emergency_low_level_state |= 1<<contact_emergency_bits[i];
+            } else if(conf_contact_mode[i]==ContactMode::MONITOR) {
+                //Do nothing, just report in status_message.contacts
+            }
+            status_message.contacts |= (1<<i);
+        }
+    }
 
     /*#ifdef USB_DEBUG
         DEBUG_SERIAL.printf("Emergency %d %d %d %d\n",emergency1,emergency2,emergency3,emergency4);
     #endif*/
-    now = millis();
-
-    bool is_tilted = emergency3 || emergency4;
-    bool is_lifted = emergency3 && emergency4;
-    bool stop_pressed = emergency1 || emergency2;
-
-    if (is_lifted) {
-        // We just lifted, store the timestamp
-        if (lift_emergency_started_ms == 0) {
-            lift_emergency_started_ms = now;
-        }
-    } else {
-        // Not lifted, reset the time
-        lift_emergency_started_ms = 0;
-    }
-
-    if (stop_pressed) {
-        // We just pressed, store the timestamp
-        if (button_emergency_started_ms == 0) {
-            button_emergency_started_ms = now;
-        }
-    } else {
-        // Not pressed, reset the time
-        button_emergency_started_ms = 0;
-    }
-
-    if (lift_emergency_started_ms > 0 && (now - lift_emergency_started_ms) >= LIFT_EMERGENCY_MS) {
-        // Emergency bit 2 (lift wheel 1)set?
-        if (emergency3)
-            emergency_low_level_state |= 1<<EMERGENCY_LIFT1_BIT;
-        // Emergency bit 1 (lift wheel 2)set?
-        if (emergency4)
-            emergency_low_level_state |= 1<<EMERGENCY_LIFT2_BIT;
-    }
-
-    if (is_tilted) {
-        // We just tilted, store the timestamp
-        if (tilt_emergency_started_ms == 0) {
-            tilt_emergency_started_ms = now;
-        }
-    } else {
-        // Not tilted, reset the time
-        tilt_emergency_started_ms = 0;
-    }
-
-    if (tilt_emergency_started_ms > 0 && (now - tilt_emergency_started_ms) >= TILT_EMERGENCY_MS) {
-        // Emergency bit 2 (lift wheel 1)set?
-        if (emergency3)
-            emergency_low_level_state |= 1<<EMERGENCY_LIFT1_BIT;
-        // Emergency bit 1 (lift wheel 2)set?
-        if (emergency4)
-            emergency_low_level_state |= 1<<EMERGENCY_LIFT2_BIT;
-    }
-    if (button_emergency_started_ms > 0 && (now - button_emergency_started_ms) >= BUTTON_EMERGENCY_MS) {
-        // Emergency bit 2 (stop button) set?
-        if (emergency1)
-            emergency_low_level_state |= 1<<EMERGENCY_BUTTON1_BIT;
-        // Emergency bit 1 (stop button)set?
-        if (emergency2)
-            emergency_low_level_state |= 1<<EMERGENCY_BUTTON2_BIT;
-    }
 
     //ESC must be enabled 
     setEscEnable(emergency_low_level_state==0);
@@ -271,36 +251,41 @@ void setup1() {
     digitalWrite(LED_BUILTIN, HIGH);
 }
 
-void loop1_short_job(int max_job_length_us) {
-    //here we can run some short (leass than USS_CYCLETIME_MS) tasks
+void loop1_short_job(uint32_t now_ms, uint32_t max_job_length_us) {
+    //here we can run some short (less than USS_CYCLETIME_MS) tasks
+    //if (max_job_length_us>10000) {
+    //updateDisplay(now_ms);
+    //}
 }
 
 void loop1() {
     // Loop through the mux and query actions. Store the result in the multicore fifo
     bool state;
     double distance;
-    unsigned long duration;
-    unsigned long wait_us,response_us,uss_measurement_age_ms;   
+    uint32_t duration;
+    uint32_t wait_us,response_us,uss_measurement_age_ms;   
 
     for (uint8_t mux_address = 0; mux_address < 7; mux_address++) {
         gpio_put_masked(0b111 << 13, mux_address << 13);
         delay(1);
         
         if(mux_address<USS_COUNT) {
-            if ( (USS_ENABLED & (1 << mux_address))==0 ) {
+            if ( !conf_uss_enabled[mux_address] ) {
                 duration = 0;
                 distance = 0;
                 continue;
             }
             digitalWrite(PIN_MUX_OUT, LOW); 
-            unsigned long prev_uss_delta_ms = millis()-last_uss_trigger_ms;
+            uint32_t now = millis();
+            uint32_t prev_uss_delta_ms = now - last_uss_trigger_ms;
             if(prev_uss_delta_ms < USS_CYCLETIME_MS) {
                 wait_us = (USS_CYCLETIME_MS-prev_uss_delta_ms)*1000;
 
                 //we can do a short job here ...
-                loop1_short_job(wait_us);
+                loop1_short_job(now, wait_us);
                 // and test again, how long we should sleep before next uss request
-                prev_uss_delta_ms = millis()-last_uss_trigger_ms;
+                now = millis();
+                prev_uss_delta_ms = now - last_uss_trigger_ms;
                 if(prev_uss_delta_ms < USS_CYCLETIME_MS) {
                     wait_us = (USS_CYCLETIME_MS-prev_uss_delta_ms)*1000;
                 } else {
@@ -310,7 +295,7 @@ void loop1() {
             }else{
                 wait_us = 5;
             }
-            
+  
             delayMicroseconds(wait_us);
             // Sets the trigPin on HIGH state for 20 micro seconds at least
             digitalWrite(PIN_MUX_OUT, HIGH); 
@@ -319,10 +304,11 @@ void loop1() {
             digitalWrite(PIN_MUX_OUT, LOW);
             duration = pulseIn(PIN_MUX_IN, HIGH,USS_ECHO_TIMEOUT_US); // 35000UL for full cycle, Reads the echoPin, returns the sound wave travel time in microseconds
             distance = duration*0.343/2;//0.343mm per 1 microsecond
-            response_us = millis()-last_uss_trigger_ms;
-            #ifdef USB_DEBUG
-                //DEBUG_SERIAL.printf("%i %icm %ius wt %ims rsp %ims\t",mux_address,(int)(distance/10),duration,wait_us/1000,response_us);
-            #endif
+            now = millis();
+            response_us = now - last_uss_trigger_ms;
+            //#ifdef USB_DEBUG
+            //    DEBUG_SERIAL.printf("%i %icm %ius wt %ims rsp %ims\t",mux_address,(int)(distance/10),duration,wait_us/1000,response_us);
+            //#endif
         } else {
             state = gpio_get(PIN_MUX_IN);
         }
@@ -357,9 +343,9 @@ void loop1() {
         }
         mutex_exit(&mtx_status_message);
     }
-    #ifdef USB_DEBUG
-        DEBUG_SERIAL.println();
-    #endif
+    //#ifdef USB_DEBUG
+    //    DEBUG_SERIAL.println();
+    //#endif
 
     delay(10);
 }
@@ -379,8 +365,8 @@ void setup() {
         DEBUG_SERIAL.println("Begin initialization");
     #endif
 
-    lift_emergency_started_ms = 0;
-    button_emergency_started_ms = 0;
+    EEPROM.begin(256*sizeof(ConfigValue));
+
     // Initialize messages
     imu_message = {0};
     status_message = {0};
@@ -486,8 +472,8 @@ void setup() {
         display.drawString(0,3,"IMU fail!!!");
         status_message.status_bitmask = 0;
         while (1) { // Blink RED for IMU failure
-            updateDisplay(true);
-            delay(200);
+            updateDisplay(millis());
+            delay(20);
         }
     }
 
@@ -497,13 +483,192 @@ void setup() {
 #endif
     delay(100);
 
+    std::string conf_message;
+    if(loadConfiguration(conf_message)) {
+        display.drawString(0,4,"Valid config");    
+    }else{
+        display.drawString(0,4,conf_message.c_str());    
+        delay(5000);
+    }
+
     status_message.status_bitmask |= 1 << STATUS_INIT_BIT;
 
     rp2040.resumeOtherCore();
 
-    display.drawString(0,4,"Init completed");
+    display.drawString(0,5,"Init completed");
     delay(500);
     display.clear();
+}
+
+void testIntOrZero(int val, int minVal, int maxVal,std::string name,std::string &message) {
+    if(val==0){
+        return;
+    }
+    testIntInRange(val, minVal, maxVal, name, message);
+}
+
+void testIntInRange(int val, int minVal, int maxVal,std::string name,std::string &message) {
+    if(!conf_valid){
+        return;
+    }
+    if(minVal!=0 && val < minVal) {
+        char buff[17];
+        snprintf(buff, sizeof(buff), "%s<%3d", name.c_str(),minVal);
+        message = buff;
+        conf_valid=false;
+    }
+    if(maxVal!=0 && val > maxVal) {
+        char buff[17];
+        snprintf(buff, sizeof(buff), "%s>%3d", name.c_str(),maxVal);
+        message = buff;
+        conf_valid=false;
+    }
+}
+
+void testFloatInRange(float val, float minVal, float maxVal,std::string name,std::string &message) {
+    if(!conf_valid){
+        return;
+    }
+    if(minVal!=0 && val < minVal) {
+        char buff[17];
+        snprintf(buff, sizeof(buff), "%s<%4.1f", name.c_str(),minVal);
+        message = buff;
+        conf_valid=false;
+    }
+    if(maxVal!=0 && val > maxVal) {
+        char buff[17];
+        snprintf(buff, sizeof(buff), "%s>%4.1f", name.c_str(),maxVal);
+        message = buff;
+        conf_valid=false;
+    }
+}
+
+bool testFloatOrZero(float val, float minVal, float maxVal,std::string name,std::string &message) {
+    if(val==0){
+        return true;
+    }
+    testFloatInRange(val, minVal, maxVal, name, message);
+}
+
+bool loadConfiguration(std::string& conf_message) {
+    ConfigValue val;
+    int valueSize = sizeof(union ConfigValue);
+    conf_valid=true;
+
+    conf_charge_start_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_START_SOC*valueSize,val).int8Value;
+    conf_charge_start_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_START_VOLTAGE*valueSize,val).floatValue;
+    if(conf_charge_start_soc==0 && conf_charge_start_voltage==0) {
+        conf_message = "Sta CS=0&CV=0";
+        conf_valid=false;
+    }
+
+    conf_charge_stop_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_SOC*valueSize,val).int8Value;
+    conf_charge_stop_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_VOLTAGE*valueSize,val).floatValue;
+    if(conf_charge_stop_soc==0 && conf_charge_stop_voltage==0) {
+        conf_message = "Sto CS=0&CV=0";
+        conf_valid=false;
+    }
+
+    conf_charge_max_current = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_MAX_CURRENT*valueSize,val).floatValue;
+    conf_charge_stop_current = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_CURRENT*valueSize,val).floatValue;
+
+    conf_charger_min_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGER_MIN_VOLTAGE*valueSize,val).floatValue;
+    conf_charger_max_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGER_MAX_VOLTAGE*valueSize,val).floatValue;
+
+    conf_battery_empty_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_EMPTY_VOLTAGE*valueSize,val).floatValue;
+    conf_battery_full_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_FULL_VOLTAGE*valueSize,val).floatValue;
+
+    conf_battery_shutdown_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_SHUTDOWN_SOC*valueSize,val).int8Value;
+    conf_battery_shutdown_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_SHUTDOWN_VOLTAGE*valueSize,val).floatValue;
+
+    for (int uss_num = 0; uss_num < USS_COUNT; uss_num++) {
+        EEPROM.get<ConfigValue>(((int)ConfigAddress::USS_ACTIVE+uss_num*4)*valueSize,val);
+        conf_uss_enabled[uss_num] = val.boolValue;
+    }
+
+    for (int contact_num = 0; contact_num < CONTACT_COUNT; contact_num++) {
+        conf_contact_mode[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_MODE+contact_num*4)*valueSize,val).int8Value;
+        testIntInRange(conf_contact_mode[contact_num],ContactMode::OFF,ContactMode::EMERGENCY_STOP,"CM",conf_message);
+        conf_contact_active_low[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_ACTIVE_LOW+contact_num*4)*valueSize,val).boolValue;
+        conf_contact_timeout_ms[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_ACTIVE_LOW+contact_num*4)*valueSize,val).int32Value;
+        testIntInRange(conf_contact_timeout_ms[contact_num],1,10000,"CTms",conf_message);
+    }
+
+    //basic non zero test
+    testFloatInRange(conf_battery_empty_voltage,1,conf_battery_full_voltage,"BEV",conf_message);
+    testFloatInRange(conf_battery_full_voltage,conf_battery_empty_voltage,100,"BFV",conf_message);
+
+    testFloatOrZero(conf_charger_min_voltage,1,max(conf_charger_max_voltage,conf_battery_full_voltage),"MinCV",conf_message);
+    testFloatOrZero(conf_charger_max_voltage,max(conf_charger_min_voltage,conf_battery_empty_voltage),100,"MaxCV",conf_message);
+
+    testIntOrZero(conf_charge_start_soc,0,conf_charge_stop_soc,"StaCS",conf_message);
+    testIntOrZero(conf_charge_stop_soc,conf_charge_start_soc,100,"StoCS",conf_message);
+
+    testIntOrZero(conf_charge_start_voltage,0,conf_charge_stop_voltage,"StaCV",conf_message);
+    testIntOrZero(conf_charge_stop_voltage,conf_charge_start_voltage,100,"StoCV",conf_message);
+
+    testIntOrZero(conf_battery_shutdown_soc,0,100,"BSS",conf_message);
+    testFloatOrZero(conf_battery_shutdown_voltage,conf_battery_empty_voltage,conf_battery_full_voltage,"BSV",conf_message);
+
+    testFloatOrZero(conf_charge_stop_current,0,conf_charge_max_current,"CSC",conf_message);
+    testFloatOrZero(conf_charge_max_current,conf_charge_stop_current,20,"CMC",conf_message);
+
+    #ifdef USB_DEBUG
+        if(conf_valid) {
+            DEBUG_SERIAL.println("Valid conf");
+        } else {
+            DEBUG_SERIAL.printf("Invalid conf: %s\n",conf_message.c_str());
+        }
+    #endif
+
+    return conf_valid;
+}
+
+void onConfigPacketReceived(ll_high_level_config *request) {
+    int realAddress = (int)(request->address) + 4*request->address2;
+    realAddress*=sizeof(union ConfigValue);
+    if (request->address==ConfigAddress::USS_ACTIVE 
+        && request->address2>USS_COUNT) {
+        request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
+        sendUplinkMessage(request,sizeof(ll_high_level_config));
+        return;
+    } else if ((request->address==ConfigAddress::CONTACT_ACTIVE_LOW 
+            || request->address==ConfigAddress::CONTACT_MODE 
+            || request->address==ConfigAddress::CONTACT_TIMEOUT)
+             && request->address2>CONTACT_COUNT) {
+        request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
+        sendUplinkMessage(request,sizeof(ll_high_level_config));
+        return;
+    }
+
+    if(request->type == PACKET_ID_LL_HIGH_LEVEL_CONFIG_GET) {
+        EEPROM.get<ConfigValue>(realAddress,request->value);
+        sendUplinkMessage(request,sizeof(ll_high_level_config));
+    } else if(request->type == PACKET_ID_LL_HIGH_LEVEL_CONFIG_SET) {
+        if(request->address==ConfigAddress::SAVE || request->address==ConfigAddress::LOAD) {
+            std::string conf_message;
+            if(loadConfiguration(conf_message)){
+                if(request->address==ConfigAddress::SAVE){
+                    EEPROM.commit();
+                }
+                sendUplinkMessage(request,sizeof(ll_high_level_config));
+            }else{
+                request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
+                sendUplinkMessage(request,sizeof(ll_high_level_config));
+            }
+        } else {
+            ConfigValue oldValue;
+            EEPROM.get<ConfigValue>(realAddress,oldValue);
+            if(oldValue.int32Value == request->value.int32Value) {
+                request->type = PACKET_ID_LL_HIGH_LEVEL_CONFIG_GET;
+                sendUplinkMessage(request,sizeof(ll_high_level_config));
+            } else {
+                EEPROM.put<ConfigValue>(realAddress,request->value);
+                sendUplinkMessage(request,sizeof(ll_high_level_config));
+            }
+        }
+    }
+    
 }
 
 void onUplinkPacketReceived(const uint8_t *buffer, size_t size) {
@@ -527,31 +692,42 @@ void onUplinkPacketReceived(const uint8_t *buffer, size_t size) {
         // copy the state
         last_high_level_state = *((struct ll_high_level_state *) buffer);
         last_high_level_ms = millis();
+        #ifdef USB_DEBUG
+            DEBUG_SERIAL.print("got high level status ");
+            DEBUG_SERIAL.print(status_message.status_bitmask, BIN);
+            DEBUG_SERIAL.println();
+        #endif
     } else if (buffer[0] == PACKET_ID_LL_MOTOR_STATE && size == sizeof(struct ll_motor_state)) {
         // copy the state
         last_motor_state = *((struct ll_motor_state *) buffer);
         last_motor_ms = millis();
+    } else if (buffer[0] == PACKET_ID_LL_HIGH_LEVEL_CONFIG_SET && size == sizeof(struct ll_high_level_config)) {
+        onConfigPacketReceived((struct ll_high_level_config *) buffer);
     }
 }
 
 // returns true, if it's a good idea to charge the battery (current, voltages, ...)
 bool checkShouldStartCharge() {
-    return status_message.v_battery < status_message.v_charge
-        && status_message.v_charge < CHARGE_MAX_VOLT 
-        && status_message.v_charge > CHARGE_MIN_VOLT 
-        && (ant_bms_parser.is_online() 
-                ? status_message.batt_percentage < BAT_SOC_START_CHARGE 
-                : status_message.v_battery < BAT_OK_START_CHARGE);
+    return conf_valid 
+        && status_message.v_battery < status_message.v_charge
+        && (conf_charger_max_voltage==0 || status_message.v_charge < conf_charger_max_voltage) 
+        && (conf_charger_min_voltage==0 || status_message.v_charge > conf_charger_min_voltage)
+        && (ant_bms_parser.is_online() && conf_charge_start_soc!=0
+                ? status_message.batt_percentage < conf_charge_start_soc 
+                : status_message.v_battery < conf_charge_start_voltage);
 }
 
 bool checkShouldStopCharge() {
-    return status_message.v_battery > status_message.v_charge
-        || status_message.v_charge > CHARGE_MAX_VOLT 
-        || status_message.v_charge < CHARGE_MIN_VOLT 
+    return !conf_valid
+        || status_message.v_battery > status_message.v_charge
+        || (conf_charger_max_voltage!=0 && status_message.v_charge > conf_charger_max_voltage)
+        || (conf_charger_min_voltage!=0 && status_message.v_charge < conf_charger_min_voltage)
         //|| status_message.charging_current < 0.5
-        || (ant_bms_parser.is_online() 
-                ? status_message.batt_percentage > BAT_SOC_STOP_CHARGE 
-                : status_message.v_battery > BAT_CHARGE_STOP);
+        || (ant_bms_parser.is_online() && conf_charge_stop_soc!=0
+                ? status_message.batt_percentage > conf_charge_stop_soc 
+                : status_message.v_battery > conf_charge_stop_voltage)
+        || (conf_charge_max_current!=0 && status_message.battery_current > conf_charge_max_current)
+        || (conf_charge_stop_current!=0 && status_message.battery_current < conf_charge_stop_current);
 }
 
 void updateChargingEnabled() {
@@ -599,29 +775,29 @@ void filtLowPass32(int32_t u, uint16_t coef, int32_t *y) {
   *y = (int32_t)tmp + (*y);
 }
 
-void readBatteryCurrent() {
-    if(status_message.v_charge > CHARGE_MIN_VOLT) { //charger powers current sensor. no reason to read unpowered sensor
+float readChargeCurrent() {
+    if(status_message.v_charge > conf_charger_min_voltage) { //charger powers current sensor. no reason to read unpowered sensor
         uint16_t raw = analogRead(PIN_ANALOG_BATTERY_VOLTAGE);
         raw = analogRead(PIN_ANALOG_CHARGE_CURRENT);
         filtLowPass32(raw, CURRENT_FILT_COEF, &chargeCurrentFixdt);
-        status_message.battery_current = (float)(chargeCurrentFixdt >> 16) * CURRENT_CALIB_REAL_CURRENT / (CURRENT_CALIB_ADC * 100.0);
+        return (float)(chargeCurrentFixdt >> 16) * CURRENT_CALIB_REAL_CURRENT / (CURRENT_CALIB_ADC * 100.0);
     } else {
         //we don't know real battery discharge current
-        status_message.battery_current = -0.2;
+        return -0.2;
     }
 }
 
-void readBatteryVoltage() {
+float readBatteryVoltage() {
     uint16_t raw = analogRead(PIN_ANALOG_BATTERY_VOLTAGE);
     filtLowPass32(raw, BAT_FILT_COEF, &batVoltageFixdt);
-    status_message.v_battery = (float)(batVoltageFixdt >> 16) * BAT_CALIB_REAL_VOLTAGE / (BAT_CALIB_ADC * 100.0);
+    return (float)(batVoltageFixdt >> 16) * BAT_CALIB_REAL_VOLTAGE / (BAT_CALIB_ADC * 100.0);
 }
 
 
-void readChargerVoltage() {
+float readChargerVoltage() {
     uint16_t raw = analogRead(PIN_ANALOG_CHARGE_VOLTAGE);
     filtLowPass32(raw, CHARGE_FILT_COEF, &chargeVoltageFixdt);
-    status_message.v_charge = (float)(chargeVoltageFixdt >> 16) * CHARGE_CALIB_REAL_VOLTAGE / (CHARGE_CALIB_ADC * 100.0);
+    return (float)(chargeVoltageFixdt >> 16) * CHARGE_CALIB_REAL_VOLTAGE / (CHARGE_CALIB_ADC * 100.0);
 }
 
 
@@ -634,7 +810,7 @@ void loop() {
     updateChargingEnabled();
     updateEmergency();
 
-    unsigned long now = millis();
+    uint32_t now = millis();
     if (now - last_imu_ms > IMU_CYCLETIME_MS) {
         // we have to copy to the temp data structure due to alignment issues
         if(imu_read(imu_temp, imu_temp + 3, imu_temp + 6)) {
@@ -661,7 +837,7 @@ void loop() {
         // Check USS timouts
         status_message.status_bitmask &= ~(1 << STATUS_USS_TIMEOUT_BIT);
         for(int i=0;i<USS_COUNT;i++) {
-            if( (USS_ENABLED & (1<<i)) && (status_message.uss_age_ms[i] > USS_TIMEOUT_MS)) {
+            if( conf_uss_enabled[i] && (status_message.uss_age_ms[i] > USS_TIMEOUT_MS)) {
                 status_message.status_bitmask |= 1<<STATUS_USS_TIMEOUT_BIT;
             }
         }
@@ -678,18 +854,18 @@ void loop() {
         if( !ant_bms_parser.is_online() ) {
             status_message.status_bitmask |= 1<<STATUS_BMS_TIMEOUT_BIT;
 #endif //BMS_SERIAL        
-            readChargerVoltage();
-            readBatteryVoltage();
-            readBatteryCurrent();
+            status_message.v_charge = readChargerVoltage();
+            status_message.v_battery = readBatteryVoltage();
+            status_message.battery_current = readChargeCurrent();
 
             // calculate percent value accu filling
-            float delta = BAT_FULL - BAT_DISCHARGE_CUT_OFF;
-            float vo = status_message.v_battery - BAT_DISCHARGE_CUT_OFF;
-            status_message.batt_percentage = vo / delta * 100;
+            float delta = conf_battery_full_voltage - conf_battery_empty_voltage;
+            float vo = status_message.v_battery - conf_battery_empty_voltage;
+            status_message.batt_percentage = delta!=0 ? vo / delta * 100 : 0;
 #ifdef BMS_SERIAL        
         } else {
-            readChargerVoltage();
-            readBatteryVoltage();
+            status_message.v_charge = readChargerVoltage();
+            status_message.v_battery = readBatteryVoltage();
             //status_message.v_battery = ant_bms_parser.total_voltage_sensor_;
             status_message.battery_current = -ant_bms_parser.current_sensor_;//reverse current sensor
             status_message.batt_percentage = ant_bms_parser.soc_sensor_;
@@ -701,7 +877,10 @@ void loop() {
 
         // Check battery empty
         status_message.status_bitmask &= ~(1 << STATUS_BATTERY_EMPTY_BIT);
-        if (status_message.v_battery < BAT_WARN3) {
+        if (conf_battery_shutdown_voltage!=0 && status_message.v_battery < conf_battery_shutdown_voltage) {
+            status_message.status_bitmask |= 1<<STATUS_BATTERY_EMPTY_BIT;
+        }
+        if (ant_bms_parser.is_online() && conf_battery_shutdown_soc!=0 && status_message.batt_percentage < conf_battery_shutdown_soc) {
             status_message.status_bitmask |= 1<<STATUS_BATTERY_EMPTY_BIT;
         }
 
@@ -757,17 +936,15 @@ void loop() {
 #endif //USB_DEBUG
     }
 
-    if (now - last_display_ms > DISPLAY_CYCLETIME_MS) {
-        updateDisplay(false);
-        last_display_ms = now;
-    }
-
 #ifdef BMS_SERIAL
     if (now - last_bms_update_ms > BMS_UPDATE_PERIOD_MS) {
         ant_bms_parser.update();
         last_bms_update_ms = now;
     }
 #endif //BMS_SERIAL
+    
+    updateDisplay(now);
+
 }
 
 void sendUplinkMessage(void *message, size_t size) {
@@ -798,19 +975,57 @@ void updateBlink(char *message, uint8_t *blinkState, int size,int currentBlinkCo
     }
 }
 
+void displayConfiguration() {
+    if(conf_valid) {
+        snprintf(display_line,17, "VALID");
+    }else{
+        snprintf(display_line,17, "INVALID");
+    }
+    display.drawString(0, 0, display_line);
+
+    snprintf(display_line,17, "BV %4.1f %4.1f",(int)conf_battery_empty_voltage,(int)conf_battery_full_voltage);
+    display.drawString(0, 1, display_line);
+    snprintf(display_line,17, "CSSOC %3d %3d",(int)conf_charge_start_soc,(int)conf_charge_stop_soc);
+    display.drawString(0, 2, display_line);
+    snprintf(display_line,17, "CSV %4.1f %4.1f",conf_charge_start_voltage,conf_charge_stop_voltage);
+    display.drawString(0, 3, display_line);
+    snprintf(display_line,17, "CSC %4.1f %4.1f",conf_charge_stop_current,conf_charge_max_current);
+    display.drawString(0, 4, display_line);
+    snprintf(display_line,17, "CV %4.1f %4.1f",conf_charger_min_voltage,conf_charger_max_voltage);
+    display.drawString(0, 5, display_line);
+    snprintf(display_line,17, "BS %3d %4.1f",(int)conf_battery_shutdown_soc,conf_battery_shutdown_voltage);
+    display.drawString(0, 6, display_line);
+    int uss=0;
+    for(int i=0;i<USS_COUNT;i++) {
+        uss |= conf_uss_enabled[i]<<i;
+    }
+    int contact=0;
+    for(int i=0;i<CONTACT_COUNT;i++) {
+        contact |= conf_contact_mode[i]<<i*2;
+    }
+    int active_low=0;
+    for(int i=0;i<CONTACT_COUNT;i++) {
+        active_low |= conf_contact_active_low[i]<<i;
+    }
+
+    snprintf(display_line,17, "USS%2d CA%3d CL%2d",uss,contact,active_low);
+    display.drawString(0, 7, display_line);
+}
+
 void updateDisplayLine1(uint32_t now_ms) {
     uint32_t high_level_age_ms = now_ms - last_high_level_ms;
     
+    //ROS connection status
     status_line[0]         = emergency_high_level!=0 ? 'E' : 'T';
     status_line_blink[0]   = status_message.emergency_bitmask & (1<<EMERGENCY_ROS_TIMEOUT) ? DISPLAY_SLOW_BLINK : emergency_high_level!=0 ? DISPLAY_FAST_BLINK : DISPLAY_NO_BLINK;
 
     //GPS status
     status_line[1]         = high_level_age_ms < HIGH_LEVEL_TIMEOUT_MS ? 'G' : 'g';
-    if ( high_level_age_ms > HIGH_LEVEL_TIMEOUT_MS) { status_line_blink[1]=DISPLAY_SLOW_BLINK; }
-    else if (last_high_level_state.gps_quality < 25) { status_line_blink[1]=DISPLAY_FAST_BLINK; }
-    else if (last_high_level_state.gps_quality < 50) { status_line_blink[1]=DISPLAY_NORM_BLINK; }
-    else if (last_high_level_state.gps_quality < 75) { status_line_blink[1]=DISPLAY_SLOW_BLINK; }
-    else { status_line_blink[1]=DISPLAY_NO_BLINK; }
+    if ( high_level_age_ms >= HIGH_LEVEL_TIMEOUT_MS) { status_line_blink[1] = DISPLAY_SLOW_BLINK; }
+    else if (last_high_level_state.gps_quality < 25) { status_line_blink[1] = DISPLAY_FAST_BLINK; }
+    else if (last_high_level_state.gps_quality < 50) { status_line_blink[1] = DISPLAY_NORM_BLINK; }
+    else if (last_high_level_state.gps_quality < 75) { status_line_blink[1] = DISPLAY_SLOW_BLINK; }
+    else { status_line_blink[1] = DISPLAY_NO_BLINK; }
 
     //High level mode status
     if(high_level_age_ms < HIGH_LEVEL_TIMEOUT_MS) {
@@ -826,7 +1041,7 @@ void updateDisplayLine1(uint32_t now_ms) {
                 status_line_blink[2]   = DISPLAY_FAST_BLINK;
                 break;
             case HighLevelMode::MODE_RECORDING:
-                status_line[2]         = 'R';
+                status_line[2]         = 'M';
                 status_line_blink[2]   = DISPLAY_NO_BLINK;
                 break;
             default:
@@ -846,11 +1061,22 @@ void updateDisplayLine1(uint32_t now_ms) {
     //Emergency group 4-10 (7 symbols)
     status_line[4]         = status_message.status_bitmask & (1<<STATUS_BATTERY_EMPTY_BIT) ? 'V' : ' ';
     status_line_blink[4]   = DISPLAY_FAST_BLINK;
-    //Stop button(s) pressed after timeout (PIN_EMERGENCY_3 PIN_EMERGENCY_4)
-    status_line[5]         = status_message.emergency_bitmask & (1<<EMERGENCY_LIFT1_BIT | 1<<EMERGENCY_LIFT2_BIT) ? 'L' : ' ';
+    uint8_t anyEmergencyContact = 0;
+    uint8_t nonEmergenyContacts = 0;
+    for(int i=0;i<CONTACT_COUNT;i++) {
+        int emergenyContact = status_message.emergency_bitmask & (1<<contact_emergency_bits[i]);
+        int justContact = status_message.contacts & (1<<i);
+        anyEmergencyContact |= emergenyContact;
+        if(justContact && !emergenyContact) {
+            nonEmergenyContacts |= justContact;
+        }
+    }
+    //Lift/Tilt occurs after timeout (PIN_EMERGENCY_3 PIN_EMERGENCY_4)
+    status_line[5]         = nonEmergenyContacts ? 'L' : ' ';
+    //Unused at the moment
     status_line_blink[5]   = DISPLAY_FAST_BLINK;
-    //Lift/Tilt occurs after timeout (PIN_EMERGENCY_1 PIN_EMERGENCY_2)
-    status_line[6]         = status_message.emergency_bitmask & (1<<EMERGENCY_BUTTON1_BIT | 1<<EMERGENCY_BUTTON2_BIT) ? 'B' : ' ';
+    //Stop button(s) pressed after timeout (PIN_EMERGENCY_1 PIN_EMERGENCY_2)
+    status_line[6]         = anyEmergencyContact ? 'S' : ' ';
     status_line_blink[6]   = DISPLAY_FAST_BLINK;
     //Internal or external global emergency
     status_line[7]         = status_message.emergency_bitmask !=0 ? 'E' : ' ';
@@ -990,21 +1216,79 @@ void updateDisplayLine6(uint32_t now_ms) {
     display.drawString(0, 5, display_line);
 }
 
-void updateDisplayLine78(uint32_t now_ms) {
+void updateDisplayLine7(uint32_t now_ms) {
     snprintf(display_line,17, "USS %3d %3d %3d",(int)(status_message.uss_ranges_m[0]*100),(int)(status_message.uss_ranges_m[1]*100),(int)(status_message.uss_ranges_m[2]*100));
     display.drawString(0, 6, display_line);
+}
 
+void updateDisplayLine8(uint32_t now_ms) {
     snprintf(display_line,17, "USS %3d %3d",(int)(status_message.uss_ranges_m[3]*100),(int)(status_message.uss_ranges_m[4]*100));
     display.drawString(0, 7, display_line);
 }
 
-void updateDisplay(bool forceDisplay) {
-    uint32_t now_ms = millis();
+void updateDisplay(uint32_t now_ms) {
+    //#ifdef USB_DEBUG
+    //    DEBUG_SERIAL.print(".");
+    //#endif
+    last_display_line++;
+    if(last_display_line>7) {
+        if (now_ms - last_display_ms < DISPLAY_CYCLETIME_MS) {
+            last_display_line=7;
+            return;
+        }
+        last_display_ms = now_ms;
+        last_display_line=0;
+        displayUpdateCounter++;
+        if(displayUpdateCounter & DISPLAY_BLINK_CYCLE) {
+            displayUpdateCounter = 0;
+        }                                         
+    }
+    if(!conf_valid) {
+        displayConfiguration();
+        return;
+    }
 
-    displayUpdateCounter++;
-    if(displayUpdateCounter & DISPLAY_BLINK_CYCLE) {
-        displayUpdateCounter = 0;
-    }                                         
+    switch (last_display_line) {
+        case 0:
+            //High level group 0-4 (5 symbols)
+            //Communication heartbit status
+            updateDisplayLine1(now_ms);
+            break;
+        case 1:
+            // Rear motor
+            updateDisplayLine2(now_ms);
+            break;
+        case 2:
+            // Front motor
+            updateDisplayLine3(now_ms);
+            break;
+        case 3:
+            // Mower motor
+            updateDisplayLine4(now_ms);
+            break;
+        case 4:
+            updateDisplayLine5(now_ms);
+            break;
+        case 5:
+            updateDisplayLine6(now_ms);
+            break;
+        case 6:
+            updateDisplayLine7(now_ms);
+            break;
+        case 7:
+            updateDisplayLine8(now_ms);
+            break;
+    }
+
+    //snprintf(display_line,17, "Main    %.8s",ll_display_emerg);
+    //display.drawString(0, 2, display_line);
+
+    //snprintf(display_line,17, "ADC %d %d ",batteryADCRaw,chargerADCRaw);
+    //display.drawString(0, 6, display_line);
+
+    //snprintf(display_line,17, "ADC %d       ",currentADCRaw);
+    //display.drawString(0, 7, display_line);
+
 
     // Show Info Docking LED
     /*if ((status_message.charging_current > 0.80f) && (status_message.v_charge > 20.0f))
@@ -1029,37 +1313,9 @@ void updateDisplay(bool forceDisplay) {
         setBars7(leds_message, 0);
         setBars4(leds_message, 0);
     }*/
-
-    //High level group 0-4 (5 symbols)
-    //Communication heartbit status
-    updateDisplayLine1(now_ms);
-
-    // Rear motor
-    updateDisplayLine2(now_ms);
-
-    // Front motor
-    updateDisplayLine3(now_ms);
-
-    // Mower motor
-    updateDisplayLine4(now_ms);
-
-    //snprintf(display_line,17, "Main    %.8s",ll_display_emerg);
-    //display.drawString(0, 2, display_line);
-    updateDisplayLine5(now_ms);
-
-    updateDisplayLine6(now_ms);
-
-    //snprintf(display_line,17, "ADC %d %d ",batteryADCRaw,chargerADCRaw);
-    //display.drawString(0, 6, display_line);
-
-    //snprintf(display_line,17, "ADC %d       ",currentADCRaw);
-    //display.drawString(0, 7, display_line);
-
-    updateDisplayLine78(now_ms);
-
-    #ifdef USB_DEBUG
-        DEBUG_SERIAL.printf("Update display %dms\n",millis()-now_ms);
-    #endif
+    //#ifdef USB_DEBUG
+    //    DEBUG_SERIAL.printf("Display line %d updated in %dms\n",last_display_line,millis()-now_ms);
+    //#endif
 }
 
 /*void setUSSChars(int distance, char *c1,char *c2, bool up) {
