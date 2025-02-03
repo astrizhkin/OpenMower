@@ -23,6 +23,7 @@
 #include "pins.h"
 #include "imu.h"
 #include "font.h"
+#include "conf.h"
 #include "ant_bms/ant_bms.h"
 #include <U8x8lib.h>
 //#include <U8g2lib.h>
@@ -87,7 +88,7 @@ uint32_t last_display_ms = 0;
 uint8_t last_display_line = 7;
 
 uint32_t contact_started_ms[CONTACT_COUNT] = {0,0,0,0};
-bool contact_pins[CONTACT_COUNT] = {PIN_EMERGENCY_1,PIN_EMERGENCY_2,PIN_EMERGENCY_3,PIN_EMERGENCY_4};
+uint8_t contact_pins[CONTACT_COUNT] = {PIN_EMERGENCY_1,PIN_EMERGENCY_2,PIN_EMERGENCY_3,PIN_EMERGENCY_4};
 uint8_t contact_emergency_bits[CONTACT_COUNT] = {EMERGENCY_CONTACT1_BIT,EMERGENCY_CONTACT2_BIT,EMERGENCY_CONTACT3_BIT,EMERGENCY_CONTACT4_BIT};
 
 // Predefined message buffers, so that we don't need to allocate new ones later.
@@ -163,6 +164,7 @@ void sendUplinkMessage(void *message, size_t size);
 void updateDisplay(uint32_t now_ms);
 void updateBlinkState(char *message, uint8_t blinkState, int size, int currentBlinkState);
 void onUplinkPacketReceived(const uint8_t *buffer, size_t size);
+bool loadConfiguration(char *conf_message);
 
 void bmsLogFunc(int level, const char * format, ...) {
 #ifdef USB_DEBUG
@@ -483,11 +485,11 @@ void setup() {
 #endif
     delay(100);
 
-    std::string conf_message;
+    char conf_message[17];
     if(loadConfiguration(conf_message)) {
         display.drawString(0,4,"Valid config");    
     }else{
-        display.drawString(0,4,conf_message.c_str());    
+        display.drawString(0,4,conf_message);    
         delay(5000);
     }
 
@@ -498,130 +500,6 @@ void setup() {
     display.drawString(0,5,"Init completed");
     delay(500);
     display.clear();
-}
-
-void testIntOrZero(int val, int minVal, int maxVal,std::string name,std::string &message) {
-    if(val==0){
-        return;
-    }
-    testIntInRange(val, minVal, maxVal, name, message);
-}
-
-void testIntInRange(int val, int minVal, int maxVal,std::string name,std::string &message) {
-    if(!conf_valid){
-        return;
-    }
-    if(minVal!=0 && val < minVal) {
-        char buff[17];
-        snprintf(buff, sizeof(buff), "%s<%3d", name.c_str(),minVal);
-        message = buff;
-        conf_valid=false;
-    }
-    if(maxVal!=0 && val > maxVal) {
-        char buff[17];
-        snprintf(buff, sizeof(buff), "%s>%3d", name.c_str(),maxVal);
-        message = buff;
-        conf_valid=false;
-    }
-}
-
-void testFloatInRange(float val, float minVal, float maxVal,std::string name,std::string &message) {
-    if(!conf_valid){
-        return;
-    }
-    if(minVal!=0 && val < minVal) {
-        char buff[17];
-        snprintf(buff, sizeof(buff), "%s<%4.1f", name.c_str(),minVal);
-        message = buff;
-        conf_valid=false;
-    }
-    if(maxVal!=0 && val > maxVal) {
-        char buff[17];
-        snprintf(buff, sizeof(buff), "%s>%4.1f", name.c_str(),maxVal);
-        message = buff;
-        conf_valid=false;
-    }
-}
-
-bool testFloatOrZero(float val, float minVal, float maxVal,std::string name,std::string &message) {
-    if(val==0){
-        return true;
-    }
-    testFloatInRange(val, minVal, maxVal, name, message);
-}
-
-bool loadConfiguration(std::string& conf_message) {
-    ConfigValue val;
-    int valueSize = sizeof(union ConfigValue);
-    conf_valid=true;
-
-    conf_charge_start_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_START_SOC*valueSize,val).int8Value;
-    conf_charge_start_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_START_VOLTAGE*valueSize,val).floatValue;
-    if(conf_charge_start_soc==0 && conf_charge_start_voltage==0) {
-        conf_message = "Sta CS=0&CV=0";
-        conf_valid=false;
-    }
-
-    conf_charge_stop_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_SOC*valueSize,val).int8Value;
-    conf_charge_stop_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_VOLTAGE*valueSize,val).floatValue;
-    if(conf_charge_stop_soc==0 && conf_charge_stop_voltage==0) {
-        conf_message = "Sto CS=0&CV=0";
-        conf_valid=false;
-    }
-
-    conf_charge_max_current = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_MAX_CURRENT*valueSize,val).floatValue;
-    conf_charge_stop_current = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_CURRENT*valueSize,val).floatValue;
-
-    conf_charger_min_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGER_MIN_VOLTAGE*valueSize,val).floatValue;
-    conf_charger_max_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGER_MAX_VOLTAGE*valueSize,val).floatValue;
-
-    conf_battery_empty_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_EMPTY_VOLTAGE*valueSize,val).floatValue;
-    conf_battery_full_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_FULL_VOLTAGE*valueSize,val).floatValue;
-
-    conf_battery_shutdown_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_SHUTDOWN_SOC*valueSize,val).int8Value;
-    conf_battery_shutdown_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_SHUTDOWN_VOLTAGE*valueSize,val).floatValue;
-
-    for (int uss_num = 0; uss_num < USS_COUNT; uss_num++) {
-        EEPROM.get<ConfigValue>(((int)ConfigAddress::USS_ACTIVE+uss_num*4)*valueSize,val);
-        conf_uss_enabled[uss_num] = val.boolValue;
-    }
-
-    for (int contact_num = 0; contact_num < CONTACT_COUNT; contact_num++) {
-        conf_contact_mode[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_MODE+contact_num*4)*valueSize,val).int8Value;
-        testIntInRange(conf_contact_mode[contact_num],ContactMode::OFF,ContactMode::EMERGENCY_STOP,"CM",conf_message);
-        conf_contact_active_low[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_ACTIVE_LOW+contact_num*4)*valueSize,val).boolValue;
-        conf_contact_timeout_ms[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_ACTIVE_LOW+contact_num*4)*valueSize,val).int32Value;
-        testIntInRange(conf_contact_timeout_ms[contact_num],1,10000,"CTms",conf_message);
-    }
-
-    //basic non zero test
-    testFloatInRange(conf_battery_empty_voltage,1,conf_battery_full_voltage,"BEV",conf_message);
-    testFloatInRange(conf_battery_full_voltage,conf_battery_empty_voltage,100,"BFV",conf_message);
-
-    testFloatOrZero(conf_charger_min_voltage,1,max(conf_charger_max_voltage,conf_battery_full_voltage),"MinCV",conf_message);
-    testFloatOrZero(conf_charger_max_voltage,max(conf_charger_min_voltage,conf_battery_empty_voltage),100,"MaxCV",conf_message);
-
-    testIntOrZero(conf_charge_start_soc,0,conf_charge_stop_soc,"StaCS",conf_message);
-    testIntOrZero(conf_charge_stop_soc,conf_charge_start_soc,100,"StoCS",conf_message);
-
-    testIntOrZero(conf_charge_start_voltage,0,conf_charge_stop_voltage,"StaCV",conf_message);
-    testIntOrZero(conf_charge_stop_voltage,conf_charge_start_voltage,100,"StoCV",conf_message);
-
-    testIntOrZero(conf_battery_shutdown_soc,0,100,"BSS",conf_message);
-    testFloatOrZero(conf_battery_shutdown_voltage,conf_battery_empty_voltage,conf_battery_full_voltage,"BSV",conf_message);
-
-    testFloatOrZero(conf_charge_stop_current,0,conf_charge_max_current,"CSC",conf_message);
-    testFloatOrZero(conf_charge_max_current,conf_charge_stop_current,20,"CMC",conf_message);
-
-    #ifdef USB_DEBUG
-        if(conf_valid) {
-            DEBUG_SERIAL.println("Valid conf");
-        } else {
-            DEBUG_SERIAL.printf("Invalid conf: %s\n",conf_message.c_str());
-        }
-    #endif
-
-    return conf_valid;
 }
 
 void onConfigPacketReceived(ll_high_level_config *request) {
@@ -642,11 +520,13 @@ void onConfigPacketReceived(ll_high_level_config *request) {
     }
 
     if(request->type == PACKET_ID_LL_HIGH_LEVEL_CONFIG_GET) {
-        EEPROM.get<ConfigValue>(realAddress,request->value);
+        ConfigValue oldValue;
+        EEPROM.get<ConfigValue>(realAddress,oldValue);
+        request->value = oldValue;
         sendUplinkMessage(request,sizeof(ll_high_level_config));
     } else if(request->type == PACKET_ID_LL_HIGH_LEVEL_CONFIG_SET) {
         if(request->address==ConfigAddress::SAVE || request->address==ConfigAddress::LOAD) {
-            std::string conf_message;
+            char conf_message[17];
             if(loadConfiguration(conf_message)){
                 if(request->address==ConfigAddress::SAVE){
                     EEPROM.commit();
@@ -1353,3 +1233,77 @@ void updateDisplay(uint32_t now_ms) {
         sendMessage(&ui_event, sizeof(ui_event));
     }
 }*/
+
+bool loadConfiguration(char *conf_message) {
+    ConfigValue val;
+    int valueSize = sizeof(union ConfigValue);
+    conf_valid=true;
+
+    conf_charge_start_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_START_SOC*valueSize,val).int8Value;
+    conf_charge_start_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_START_VOLTAGE*valueSize,val).floatValue;
+    if(conf_charge_start_soc==0 && conf_charge_start_voltage==0) {
+        snprintf(conf_message,sizeof(conf_message),"Sta CS=0&CV=0");
+        conf_valid=false;
+    }
+
+    conf_charge_stop_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_SOC*valueSize,val).int8Value;
+    conf_charge_stop_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_VOLTAGE*valueSize,val).floatValue;
+    if(conf_charge_stop_soc==0 && conf_charge_stop_voltage==0) {
+        snprintf(conf_message,sizeof(conf_message),"Sto CS=0&CV=0");
+        conf_valid=false;
+    }
+
+    conf_charge_max_current = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_MAX_CURRENT*valueSize,val).floatValue;
+    conf_charge_stop_current = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_CURRENT*valueSize,val).floatValue;
+
+    conf_charger_min_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGER_MIN_VOLTAGE*valueSize,val).floatValue;
+    conf_charger_max_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGER_MAX_VOLTAGE*valueSize,val).floatValue;
+
+    conf_battery_empty_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_EMPTY_VOLTAGE*valueSize,val).floatValue;
+    conf_battery_full_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_FULL_VOLTAGE*valueSize,val).floatValue;
+
+    conf_battery_shutdown_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_SHUTDOWN_SOC*valueSize,val).int8Value;
+    conf_battery_shutdown_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_SHUTDOWN_VOLTAGE*valueSize,val).floatValue;
+
+    for (int uss_num = 0; uss_num < USS_COUNT; uss_num++) {
+        EEPROM.get<ConfigValue>(((int)ConfigAddress::USS_ACTIVE+uss_num*4)*valueSize,val);
+        conf_uss_enabled[uss_num] = val.boolValue;
+    }
+
+    for (int contact_num = 0; contact_num < CONTACT_COUNT; contact_num++) {
+        conf_contact_mode[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_MODE+contact_num*4)*valueSize,val).int8Value;
+        testIntInRange(conf_contact_mode[contact_num],ContactMode::OFF,ContactMode::EMERGENCY_STOP,"CM",conf_message);
+        conf_contact_active_low[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_ACTIVE_LOW+contact_num*4)*valueSize,val).boolValue;
+        conf_contact_timeout_ms[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_ACTIVE_LOW+contact_num*4)*valueSize,val).int32Value;
+        testIntInRange(conf_contact_timeout_ms[contact_num],1,10000,"CTms",conf_message);
+    }
+
+    //basic non zero test
+    testFloatInRange(conf_battery_empty_voltage,1,conf_battery_full_voltage,"BEV",conf_message);
+    testFloatInRange(conf_battery_full_voltage,conf_battery_empty_voltage,100,"BFV",conf_message);
+
+    testFloatOrZero(conf_charger_min_voltage,1,max(conf_charger_max_voltage,conf_battery_full_voltage),"MinCV",conf_message);
+    testFloatOrZero(conf_charger_max_voltage,max(conf_charger_min_voltage,conf_battery_empty_voltage),100,"MaxCV",conf_message);
+
+    testIntOrZero(conf_charge_start_soc,0,conf_charge_stop_soc,"StaCS",conf_message);
+    testIntOrZero(conf_charge_stop_soc,conf_charge_start_soc,100,"StoCS",conf_message);
+
+    testIntOrZero(conf_charge_start_voltage,0,conf_charge_stop_voltage,"StaCV",conf_message);
+    testIntOrZero(conf_charge_stop_voltage,conf_charge_start_voltage,100,"StoCV",conf_message);
+
+    testIntOrZero(conf_battery_shutdown_soc,0,100,"BSS",conf_message);
+    testFloatOrZero(conf_battery_shutdown_voltage,conf_battery_empty_voltage,conf_battery_full_voltage,"BSV",conf_message);
+
+    testFloatOrZero(conf_charge_stop_current,0,conf_charge_max_current,"CSC",conf_message);
+    testFloatOrZero(conf_charge_max_current,conf_charge_stop_current,20,"CMC",conf_message);
+
+    #ifdef USB_DEBUG
+        if(conf_valid) {
+            DEBUG_SERIAL.println("Valid conf");
+        } else {
+            DEBUG_SERIAL.printf("Invalid conf: %s\n",conf_message);
+        }
+    #endif
+
+    return conf_valid;
+}
