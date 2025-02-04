@@ -80,6 +80,7 @@ typedef enum StatusBits {
 #define DISPLAY_NORM_BLINK  0b0010
 #define DISPLAY_SLOW_BLINK  0b0100
 #define DISPLAY_BLINK_CYCLE 0b1000
+#define EEPROM_CONFIG_VERSION 1
 
 //XESC fault codes
 typedef enum XescFaultCode {
@@ -219,10 +220,15 @@ struct ll_motor_state {
 } __attribute__((packed));
 #pragma pack(pop)
 
-enum class ConfigAddress : uint8_t {
+typedef enum ConfigCommand {
+    CONFIGURATION_LOAD = 1,
+    CONFIGURATION_SAVE = 2
+} ConfigCommand;
+
+typedef enum ConfigAddress {
   //control group (10)
-  SAVE = 0, //bool
-  LOAD = 1, //bool
+  EEPROM_STATUS = 0, //bool
+  COMMAND = 1, //bool
 
   //charge group (20)
   CHARGE_START_SOC = 10, //int percent, 0 - disable
@@ -255,13 +261,13 @@ enum class ConfigAddress : uint8_t {
 
   //end
   END = 30+32+32
-};
+} ConfigAddress;
 
-enum ContactMode {
+typedef enum ContactMode {
   OFF = 0,
   MONITOR = 1,  // Contact output
   EMERGENCY_STOP = 2, // Emergeny bit and contact output
-};
+} ContactMode;
 
 union ConfigValue {
 //  double doubleValue;

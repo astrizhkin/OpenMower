@@ -17,7 +17,7 @@
 #include <Arduino.h>
 #include <FastCRC.h>
 #include <PacketSerial.h>
-#include <EEPROM.h>
+#include "EEPROMFixed.h"
 #include "datatypes.h"
 #include "defines.h"
 #include "pins.h"
@@ -169,6 +169,12 @@ void updateDisplay(uint32_t now_ms);
 void updateBlinkState(char *message, uint8_t blinkState, int size, int currentBlinkState);
 void onUplinkPacketReceived(const uint8_t *buffer, size_t size);
 bool loadConfiguration(char *conf_message);
+void resetConfiguration();
+ConfigValue &eepromGet(const ConfigAddress address,const uint8_t address2,ConfigValue &val);
+ConfigValue &eepromGet(const ConfigAddress address,ConfigValue &val);
+const ConfigValue &eepromPut(const ConfigAddress address,const uint8_t address2,const ConfigValue &val);
+const ConfigValue &eepromPut(const ConfigAddress address,const ConfigValue &val);
+
 
 void bmsLogFunc(int level, const char * format, ...) {
 #ifdef USB_DEBUG
@@ -371,7 +377,29 @@ void setup() {
         DEBUG_SERIAL.println("Begin initialization");
     #endif
 
-    EEPROM.begin(256*sizeof(ConfigValue));
+    EEPROMFixed.begin(256*sizeof(union ConfigValue));
+    ConfigValue eeprom_config_version;
+    eepromGet(ConfigAddress::EEPROM_STATUS,eeprom_config_version);
+    if(eeprom_config_version.int32Value!=EEPROM_CONFIG_VERSION) {
+        #ifdef USB_DEBUG
+            DEBUG_SERIAL.println("Reset coniguration");
+        #endif
+        resetConfiguration();
+        eeprom_config_version.int32Value=EEPROM_CONFIG_VERSION;
+        eepromPut(ConfigAddress::EEPROM_STATUS,eeprom_config_version);
+        #ifdef USB_DEBUG
+            DEBUG_SERIAL.println("Commit");
+        #endif
+        if(!EEPROMFixed.commitFixed()){
+            #ifdef USB_DEBUG
+                DEBUG_SERIAL.println("Fail to commit");
+            #endif
+        }
+    }else{
+        #ifdef USB_DEBUG
+            DEBUG_SERIAL.println("Coniguration version match");
+        #endif
+    }
 
     // Initialize messages
     imu_message = {0};
@@ -504,14 +532,20 @@ void setup() {
     display.drawString(0,5,"Init completed");
     delay(500);
     display.clear();
+    #ifdef USB_DEBUG
+        DEBUG_SERIAL.println("Init completed");
+    #endif
 }
 
 void onConfigPacketReceived(ll_high_level_config *request) {
-    int realAddress = (int)(request->address) + 4*request->address2;
-    realAddress*=sizeof(union ConfigValue);
+    //int realAddress = (int)(request->address) + 4*request->address2;
+    //realAddress*=sizeof(union ConfigValue);
     if (request->address==ConfigAddress::USS_ACTIVE 
         && request->address2>USS_COUNT) {
         request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
+        #ifdef USB_DEBUG
+            DEBUG_SERIAL.printf("ConfigRsp: incorrect USS address %d,%d",request->address,request->address2);
+        #endif
         sendUplinkMessage(request,sizeof(ll_high_level_config));
         return;
     } else if ((request->address==ConfigAddress::CONTACT_ACTIVE_LOW 
@@ -519,35 +553,78 @@ void onConfigPacketReceived(ll_high_level_config *request) {
             || request->address==ConfigAddress::CONTACT_TIMEOUT)
              && request->address2>CONTACT_COUNT) {
         request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
+        #ifdef USB_DEBUG
+            DEBUG_SERIAL.printf("ConfigRsp: incorrect contact address %d,%d",request->address,request->address2);
+        #endif
         sendUplinkMessage(request,sizeof(ll_high_level_config));
         return;
+    } else if (request->address2!=0) {
+        request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
+        #ifdef USB_DEBUG
+            DEBUG_SERIAL.printf("ConfigRsp: incorrect address2 %d,%d",request->address,request->address2);
+        #endif
+        sendUplinkMessage(request,sizeof(ll_high_level_config));
+        return;        
     }
 
-    if(request->type == PACKET_ID_LL_HIGH_LEVEL_CONFIG_GET) {
+    if (request->type == PACKET_ID_LL_HIGH_LEVEL_CONFIG_GET) {
         ConfigValue oldValue;
-        EEPROM.get<ConfigValue>(realAddress,oldValue);
+        eepromGet(request->address,request->address2,oldValue);
         request->value = oldValue;
+        #ifdef USB_DEBUG
+            DEBUG_SERIAL.printf("ConfigRsp: reading address %d,%d=%d",request->address,request->address2,request->value.int32Value);
+        #endif
         sendUplinkMessage(request,sizeof(ll_high_level_config));
-    } else if(request->type == PACKET_ID_LL_HIGH_LEVEL_CONFIG_SET) {
-        if(request->address==ConfigAddress::SAVE || request->address==ConfigAddress::LOAD) {
-            char conf_message[17];
-            if(loadConfiguration(conf_message)){
-                if(request->address==ConfigAddress::SAVE){
-                    EEPROM.commit();
+    } else if (request->type == PACKET_ID_LL_HIGH_LEVEL_CONFIG_SET) {
+        if (request->address==ConfigAddress::EEPROM_STATUS) {
+            request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
+            #ifdef USB_DEBUG
+                DEBUG_SERIAL.printf("ConfigRsp: read only address %d,%d",request->address,request->address2);
+            #endif
+            sendUplinkMessage(request,sizeof(ll_high_level_config));
+            return;
+        } else if (request->address==ConfigAddress::COMMAND) {
+            uint8_t command = request->value.int8Value;
+            if (command==ConfigCommand::CONFIGURATION_LOAD || command==ConfigCommand::CONFIGURATION_SAVE) {
+                char conf_message[17];
+                if (loadConfiguration(conf_message)){
+                    if (command == ConfigCommand::CONFIGURATION_SAVE){
+                        EEPROMFixed.commitFixed();
+                    }
+                    #ifdef USB_DEBUG
+                        DEBUG_SERIAL.printf("ConfigRsp: load success %d,%d",request->address,request->address2);
+                    #endif
+                    sendUplinkMessage(request,sizeof(ll_high_level_config));
+                } else {
+                    request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
+                    #ifdef USB_DEBUG
+                        DEBUG_SERIAL.printf("ConfigRsp: load error %d,%d",request->address,request->address2);
+                    #endif
+                    sendUplinkMessage(request,sizeof(ll_high_level_config));
+                    return;
                 }
-                sendUplinkMessage(request,sizeof(ll_high_level_config));
-            }else{
+            } else {
                 request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
+                #ifdef USB_DEBUG
+                    DEBUG_SERIAL.printf("ConfigRsp: unknown command %d,%d=%d",request->address,request->address2,request->value.int32Value);
+                #endif
                 sendUplinkMessage(request,sizeof(ll_high_level_config));
+                return;
             }
         } else {
             ConfigValue oldValue;
-            EEPROM.get<ConfigValue>(realAddress,oldValue);
+            eepromGet(request->address,request->address2,oldValue);
             if(oldValue.int32Value == request->value.int32Value) {
                 request->type = PACKET_ID_LL_HIGH_LEVEL_CONFIG_GET;
+                #ifdef USB_DEBUG
+                    DEBUG_SERIAL.printf("ConfigRsp: no changes %d,%d=%d",request->address,request->address2,request->value.int32Value);
+                #endif
                 sendUplinkMessage(request,sizeof(ll_high_level_config));
             } else {
-                EEPROM.put<ConfigValue>(realAddress,request->value);
+                eepromPut(request->address,request->address2,request->value);
+                #ifdef USB_DEBUG
+                    DEBUG_SERIAL.printf("ConfigRsp: set %d,%d=%d",request->address,request->address2,request->value.int32Value);
+                #endif
                 sendUplinkMessage(request,sizeof(ll_high_level_config));
             }
         }
@@ -1269,51 +1346,130 @@ void updateDisplay(uint32_t now_ms) {
     }
 }*/
 
+ConfigValue &eepromGet(const ConfigAddress address,const uint8_t address2,ConfigValue &val){
+    int valueSize = sizeof(union ConfigValue);
+    int realAddress = ((int)address + (int)address2*4)*valueSize;
+    return EEPROMFixed.get<ConfigValue>(realAddress,val);
+}
+
+ConfigValue &eepromGet(const ConfigAddress address,ConfigValue &val){
+    return eepromGet(address,0,val);
+}
+
+const ConfigValue &eepromPut(const ConfigAddress address,const uint8_t address2,const ConfigValue &val){
+    int valueSize = sizeof(union ConfigValue);
+    int realAddress = ((int)address + (int)address2*4)*valueSize;
+    return EEPROMFixed.put<ConfigValue>(realAddress,val);
+}
+
+const ConfigValue &eepromPut(const ConfigAddress address,const ConfigValue &val){
+    return eepromPut(address,0,val);
+}
+
+void resetConfiguration() {
+    ConfigValue val;
+    
+    val.int32Value=0; val.int8Value=85;
+    eepromPut(ConfigAddress::CHARGE_START_SOC,val);
+    val.int32Value=0; val.floatValue=3.35*12;
+    eepromPut(ConfigAddress::CHARGE_START_VOLTAGE,val);
+
+    val.int32Value=0; val.int8Value=95;
+    eepromPut(ConfigAddress::CHARGE_STOP_SOC,val);
+    val.int32Value=0; val.floatValue=3.45*12;
+    eepromPut(ConfigAddress::CHARGE_STOP_VOLTAGE,val);
+    
+    val.int32Value=0; val.floatValue=10.0;
+    eepromPut(ConfigAddress::CHARGE_MAX_CURRENT,val);
+    val.int32Value=0; val.floatValue=0.1;
+    eepromPut(ConfigAddress::CHARGE_STOP_CURRENT,val);
+    
+    val.int32Value=0; val.floatValue=5.0;
+    eepromPut(ConfigAddress::CHARGER_MIN_VOLTAGE,val);
+    val.int32Value=0; val.floatValue=3.8*12;
+    eepromPut(ConfigAddress::CHARGER_MAX_VOLTAGE,val);
+
+    val.int32Value=0; val.floatValue=1.0;
+    eepromPut(ConfigAddress::CHARGE_MIN_BATTERY_TEMPERATURE,val);
+    
+    val.int32Value=0; val.floatValue=35.0;
+    eepromPut(ConfigAddress::CHARGE_MAX_BATTERY_TEMPERATURE,val);
+    
+    val.int32Value=0; val.floatValue=80.0;
+    eepromPut(ConfigAddress::CHARGE_STOP_BALANCER_TEMPERATURE,val);
+
+    val.int32Value=0; val.floatValue=2.5*12;
+    eepromPut(ConfigAddress::BATTERY_EMPTY_VOLTAGE,val);
+    val.int32Value=0; val.floatValue=3.65*12;
+    eepromPut(ConfigAddress::BATTERY_FULL_VOLTAGE,val);
+
+    val.int32Value=0; val.int8Value=5;
+    eepromPut(ConfigAddress::BATTERY_SHUTDOWN_SOC,val);
+    val.int32Value=0; val.floatValue=2.7*12;
+    eepromPut(ConfigAddress::BATTERY_SHUTDOWN_VOLTAGE,val);
+
+    for (int uss_num = 0; uss_num < USS_COUNT; uss_num++) {
+        val.int32Value=0; val.boolValue=true;
+        eepromPut(ConfigAddress::USS_ACTIVE,uss_num,val);
+    }
+
+    for (int contact_num = 0; contact_num < CONTACT_COUNT; contact_num++) {
+        val.int32Value=0; val.int8Value = contact_num==0 ? ContactMode::EMERGENCY_STOP : ContactMode::MONITOR;
+        eepromPut(ConfigAddress::CONTACT_MODE,contact_num,val);
+        
+        val.int32Value=0; val.boolValue=true;
+        eepromPut(ConfigAddress::CONTACT_ACTIVE_LOW,contact_num,val);
+        
+        val.int32Value=0; val.int32Value=20;
+        eepromPut(ConfigAddress::CONTACT_TIMEOUT,contact_num,val);
+    }
+
+}
+
 bool loadConfiguration(char *conf_message) {
     ConfigValue val;
-    int valueSize = sizeof(union ConfigValue);
+    
     conf_valid=true;
 
-    conf_charge_start_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_START_SOC*valueSize,val).int8Value;
-    conf_charge_start_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_START_VOLTAGE*valueSize,val).floatValue;
+    conf_charge_start_soc = eepromGet(ConfigAddress::CHARGE_START_SOC,val).int8Value;
+    conf_charge_start_voltage = eepromGet(ConfigAddress::CHARGE_START_VOLTAGE,val).floatValue;
     if(conf_charge_start_soc==0 && conf_charge_start_voltage==0) {
         snprintf(conf_message,sizeof(conf_message),"Sta CS=0&CV=0");
         conf_valid=false;
     }
 
-    conf_charge_stop_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_SOC*valueSize,val).int8Value;
-    conf_charge_stop_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_VOLTAGE*valueSize,val).floatValue;
+    conf_charge_stop_soc = eepromGet(ConfigAddress::CHARGE_STOP_SOC,val).int8Value;
+    conf_charge_stop_voltage = eepromGet(ConfigAddress::CHARGE_STOP_VOLTAGE,val).floatValue;
     if(conf_charge_stop_soc==0 && conf_charge_stop_voltage==0) {
         snprintf(conf_message,sizeof(conf_message),"Sto CS=0&CV=0");
         conf_valid=false;
     }
 
-    conf_charge_max_current = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_MAX_CURRENT*valueSize,val).floatValue;
-    conf_charge_stop_current = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_CURRENT*valueSize,val).floatValue;
+    conf_charge_max_current = eepromGet(ConfigAddress::CHARGE_MAX_CURRENT,val).floatValue;
+    conf_charge_stop_current = eepromGet(ConfigAddress::CHARGE_STOP_CURRENT,val).floatValue;
 
-    conf_charger_min_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGER_MIN_VOLTAGE*valueSize,val).floatValue;
-    conf_charger_max_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGER_MAX_VOLTAGE*valueSize,val).floatValue;
+    conf_charger_min_voltage = eepromGet(ConfigAddress::CHARGER_MIN_VOLTAGE,val).floatValue;
+    conf_charger_max_voltage = eepromGet(ConfigAddress::CHARGER_MAX_VOLTAGE,val).floatValue;
 
-    conf_charge_min_battery_temperature = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_MIN_BATTERY_TEMPERATURE*valueSize,val).floatValue;
-    conf_charge_max_battery_temperature = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_MAX_BATTERY_TEMPERATURE*valueSize,val).floatValue;
-    conf_charge_stop_balancer_temperature = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_BALANCER_TEMPERATURE*valueSize,val).floatValue;
+    conf_charge_min_battery_temperature = eepromGet(ConfigAddress::CHARGE_MIN_BATTERY_TEMPERATURE,val).floatValue;
+    conf_charge_max_battery_temperature = eepromGet(ConfigAddress::CHARGE_MAX_BATTERY_TEMPERATURE,val).floatValue;
+    conf_charge_stop_balancer_temperature = eepromGet(ConfigAddress::CHARGE_STOP_BALANCER_TEMPERATURE,val).floatValue;
 
-    conf_battery_empty_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_EMPTY_VOLTAGE*valueSize,val).floatValue;
-    conf_battery_full_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_FULL_VOLTAGE*valueSize,val).floatValue;
+    conf_battery_empty_voltage = eepromGet(ConfigAddress::BATTERY_EMPTY_VOLTAGE,val).floatValue;
+    conf_battery_full_voltage = eepromGet(ConfigAddress::BATTERY_FULL_VOLTAGE,val).floatValue;
 
-    conf_battery_shutdown_soc = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_SHUTDOWN_SOC*valueSize,val).int8Value;
-    conf_battery_shutdown_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_SHUTDOWN_VOLTAGE*valueSize,val).floatValue;
+    conf_battery_shutdown_soc = eepromGet(ConfigAddress::BATTERY_SHUTDOWN_SOC,val).int8Value;
+    conf_battery_shutdown_voltage = eepromGet(ConfigAddress::BATTERY_SHUTDOWN_VOLTAGE,val).floatValue;
 
     for (int uss_num = 0; uss_num < USS_COUNT; uss_num++) {
-        EEPROM.get<ConfigValue>(((int)ConfigAddress::USS_ACTIVE+uss_num*4)*valueSize,val);
-        conf_uss_enabled[uss_num] = val.boolValue;
+        conf_uss_enabled[uss_num] = eepromGet(ConfigAddress::USS_ACTIVE,uss_num,val).boolValue;
     }
 
     for (int contact_num = 0; contact_num < CONTACT_COUNT; contact_num++) {
-        conf_contact_mode[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_MODE+contact_num*4)*valueSize,val).int8Value;
+        conf_contact_mode[contact_num] = eepromGet(ConfigAddress::CONTACT_MODE,contact_num,val).int8Value;
         testIntInRange(conf_contact_mode[contact_num],ContactMode::OFF,ContactMode::EMERGENCY_STOP,"CM",conf_message);
-        conf_contact_active_low[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_ACTIVE_LOW+contact_num*4)*valueSize,val).boolValue;
-        conf_contact_timeout_ms[contact_num] = EEPROM.get<ConfigValue>(((int)ConfigAddress::CONTACT_ACTIVE_LOW+contact_num*4)*valueSize,val).int32Value;
+        conf_contact_active_low[contact_num] = eepromGet(ConfigAddress::CONTACT_ACTIVE_LOW,contact_num,val).boolValue;
+        conf_contact_timeout_ms[contact_num] = eepromGet(ConfigAddress::CONTACT_TIMEOUT,contact_num,val).int32Value;
         testIntInRange(conf_contact_timeout_ms[contact_num],1,10000,"CTms",conf_message);
     }
 
