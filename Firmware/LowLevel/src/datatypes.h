@@ -156,7 +156,9 @@ struct ll_status {
     float v_battery;
     // Charge current
     float battery_current;
-    uint8_t batt_percentage;
+    uint8_t battery_soc;
+    float battery_temperature;
+    float balancer_temperature;
     uint16_t crc;
 } __attribute__((packed));
 #pragma pack(pop)
@@ -222,7 +224,7 @@ enum class ConfigAddress : uint8_t {
   SAVE = 0, //bool
   LOAD = 1, //bool
 
-  //charge group (10)
+  //charge group (20)
   CHARGE_START_SOC = 10, //int percent, 0 - disable
   CHARGE_START_VOLTAGE = 11,//float volt, 0 - disable
   CHARGE_STOP_SOC = 12,  //int percent, 0 - disable
@@ -231,23 +233,25 @@ enum class ConfigAddress : uint8_t {
   CHARGE_MAX_CURRENT = 15,//float current, 0 - disable
   CHARGER_MAX_VOLTAGE = 16,//float volt, 0 - disable
   CHARGER_MIN_VOLTAGE = 17,//float volt, 0 - disable
-
+  CHARGE_MIN_BATTERY_TEMPERATURE = 18, //int percent, 0 - disable
+  CHARGE_MAX_BATTERY_TEMPERATURE = 19,//float volt, 0 - disable
+  CHARGE_STOP_BALANCER_TEMPERATURE = 20,//float volt, 0 - disable
 
   //battery group (10)
-  BATTERY_EMPTY_VOLTAGE = 20,//float current, 0 - disable
-  BATTERY_FULL_VOLTAGE = 21,//float current, 0 - disable
-  BATTERY_LOW_WARNING_SOC = 22,//int percent, 0 - disable
-  BATTERY_LOW_WARNING_VOLTAGE = 23,//float current, 0 - disable
-  BATTERY_SHUTDOWN_SOC = 24,//int percent, 0 - disable
-  BATTERY_SHUTDOWN_VOLTAGE = 25,//float current, 0 - disable
+  BATTERY_EMPTY_VOLTAGE = 30,//float current, 0 - disable
+  BATTERY_FULL_VOLTAGE = 31,//float current, 0 - disable
+  BATTERY_LOW_WARNING_SOC = 32,//int percent, 0 - disable
+  BATTERY_LOW_WARNING_VOLTAGE = 33,//float current, 0 - disable
+  BATTERY_SHUTDOWN_SOC = 34,//int percent, 0 - disable
+  BATTERY_SHUTDOWN_VOLTAGE = 35,//float current, 0 - disable
 
   //contact group (4x8)
-  CONTACT_MODE = 30,//ContactMode, address2 is requred
-  CONTACT_ACTIVE_LOW = 31,//bool, address2 is requred
-  CONTACT_TIMEOUT = 32,//bool, address2 is requred
+  CONTACT_MODE = 40,//ContactMode, address2 is requred
+  CONTACT_ACTIVE_LOW = 41,//bool, address2 is requred
+  CONTACT_TIMEOUT = 42,//bool, address2 is requred
 
   //uss group (4x8)
-  USS_ACTIVE = 30+32,//bool, address2 is requred
+  USS_ACTIVE = 40+32,//bool, address2 is requred
 
   //end
   END = 30+32+32

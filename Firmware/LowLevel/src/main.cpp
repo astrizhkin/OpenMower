@@ -137,6 +137,10 @@ float conf_charge_stop_current = 0;
 float conf_charger_max_voltage = 0;
 float conf_charger_min_voltage = 0;
 
+float conf_charge_min_battery_temperature = 0;
+float conf_charge_max_battery_temperature = 0;
+float conf_charge_stop_balancer_temperature = 0;
+
 float conf_battery_full_voltage = 0;//BAT_FULL
 float conf_battery_empty_voltage = 0;//BAT_DISCHARGE_CUT_OFF
 
@@ -586,28 +590,52 @@ void onUplinkPacketReceived(const uint8_t *buffer, size_t size) {
     }
 }
 
-// returns true, if it's a good idea to charge the battery (current, voltages, ...)
+bool checkBatteryTemperatureOk() {
+    return !ant_bms_parser.is_online() || 
+        ((conf_charge_min_battery_temperature==0 || status_message.battery_temperature > conf_charge_min_battery_temperature) &&
+         (conf_charge_max_battery_temperature==0 || status_message.battery_temperature < conf_charge_max_battery_temperature));
+}
+
+bool checkBalancerTemperatureOk() {
+    return !ant_bms_parser.is_online() 
+        || conf_charge_stop_balancer_temperature==0 || status_message.balancer_temperature < conf_charge_stop_balancer_temperature;
+}
+
+bool checkChargerVoltageOk() {
+    return (conf_charger_max_voltage==0 || status_message.v_charge < conf_charger_max_voltage) 
+        && (conf_charger_min_voltage==0 || status_message.v_charge > conf_charger_min_voltage);
+}
+
+bool checkChargeCurrentOk() {
+     return (conf_charge_max_current==0 || status_message.battery_current < conf_charge_max_current)
+        && (conf_charge_stop_current==0 || status_message.battery_current > conf_charge_stop_current);
+}
+
+bool checkWantCharge() {
+    return (ant_bms_parser.is_online() && conf_charge_start_soc!=0
+                ? status_message.battery_soc < conf_charge_start_soc 
+                : status_message.v_battery < conf_charge_start_voltage);
+}
+
 bool checkShouldStartCharge() {
     return conf_valid 
         && status_message.v_battery < status_message.v_charge
-        && (conf_charger_max_voltage==0 || status_message.v_charge < conf_charger_max_voltage) 
-        && (conf_charger_min_voltage==0 || status_message.v_charge > conf_charger_min_voltage)
-        && (ant_bms_parser.is_online() && conf_charge_start_soc!=0
-                ? status_message.batt_percentage < conf_charge_start_soc 
-                : status_message.v_battery < conf_charge_start_voltage);
+        && checkChargerVoltageOk()
+        && checkBatteryTemperatureOk()
+        && checkBalancerTemperatureOk()
+        && checkWantCharge();
 }
 
 bool checkShouldStopCharge() {
     return !conf_valid
         || status_message.v_battery > status_message.v_charge
-        || (conf_charger_max_voltage!=0 && status_message.v_charge > conf_charger_max_voltage)
-        || (conf_charger_min_voltage!=0 && status_message.v_charge < conf_charger_min_voltage)
+        || !checkChargerVoltageOk()
+        || !checkBalancerTemperatureOk()
         //|| status_message.charging_current < 0.5
         || (ant_bms_parser.is_online() && conf_charge_stop_soc!=0
-                ? status_message.batt_percentage > conf_charge_stop_soc 
+                ? status_message.battery_soc > conf_charge_stop_soc 
                 : status_message.v_battery > conf_charge_stop_voltage)
-        || (conf_charge_max_current!=0 && status_message.battery_current > conf_charge_max_current)
-        || (conf_charge_stop_current!=0 && status_message.battery_current < conf_charge_stop_current);
+        || !checkChargeCurrentOk();
 }
 
 void updateChargingEnabled() {
@@ -741,18 +769,22 @@ void loop() {
             // calculate percent value accu filling
             float delta = conf_battery_full_voltage - conf_battery_empty_voltage;
             float vo = status_message.v_battery - conf_battery_empty_voltage;
-            status_message.batt_percentage = delta!=0 ? vo / delta * 100 : 0;
+            status_message.battery_soc = delta!=0 ? vo / delta * 100 : 0;
+            status_message.battery_temperature = 20;//we don't know, assume it is ok
+            status_message.balancer_temperature = 20;//we don't know, assume it is ok
 #ifdef BMS_SERIAL        
         } else {
             status_message.v_charge = readChargerVoltage();
             status_message.v_battery = readBatteryVoltage();
             //status_message.v_battery = ant_bms_parser.total_voltage_sensor_;
             status_message.battery_current = -ant_bms_parser.current_sensor_;//reverse current sensor
-            status_message.batt_percentage = ant_bms_parser.soc_sensor_;
+            status_message.battery_soc = ant_bms_parser.soc_sensor_;
+            status_message.battery_temperature = ant_bms_parser.temperatures_[0].temperature_sensor_;
+            status_message.balancer_temperature = ant_bms_parser.temperatures_[1].temperature_sensor_;
         }
 #endif //BMS_SERIAL
-        if (status_message.batt_percentage > 100) {
-            status_message.batt_percentage = 100;
+        if (status_message.battery_soc > 100) {
+            status_message.battery_soc = 100;
         }
 
         // Check battery empty
@@ -760,7 +792,7 @@ void loop() {
         if (conf_battery_shutdown_voltage!=0 && status_message.v_battery < conf_battery_shutdown_voltage) {
             status_message.status_bitmask |= 1<<STATUS_BATTERY_EMPTY_BIT;
         }
-        if (ant_bms_parser.is_online() && conf_battery_shutdown_soc!=0 && status_message.batt_percentage < conf_battery_shutdown_soc) {
+        if (ant_bms_parser.is_online() && conf_battery_shutdown_soc!=0 && status_message.battery_soc < conf_battery_shutdown_soc) {
             status_message.status_bitmask |= 1<<STATUS_BATTERY_EMPTY_BIT;
         }
 
@@ -856,24 +888,25 @@ void updateBlink(char *message, uint8_t *blinkState, int size,int currentBlinkCo
 }
 
 void displayConfiguration() {
-    if(conf_valid) {
-        snprintf(display_line,17, "VALID");
-    }else{
-        snprintf(display_line,17, "INVALID");
-    }
+    snprintf(display_line,17, "%c bV %4.1f %4.1f",conf_valid?'+':'-',conf_battery_empty_voltage,conf_battery_full_voltage);
     display.drawString(0, 0, display_line);
 
-    snprintf(display_line,17, "BV %4.1f %4.1f",(int)conf_battery_empty_voltage,(int)conf_battery_full_voltage);
+    snprintf(display_line,17, "bT %3.1f %3.1f %3.1f",conf_charge_min_battery_temperature,conf_charge_max_battery_temperature,conf_charge_stop_balancer_temperature);
     display.drawString(0, 1, display_line);
-    snprintf(display_line,17, "CSSOC %3d %3d",(int)conf_charge_start_soc,(int)conf_charge_stop_soc);
+
+    snprintf(display_line,17, "csSOC %3d %3d",(int)conf_charge_start_soc,(int)conf_charge_stop_soc);
     display.drawString(0, 2, display_line);
-    snprintf(display_line,17, "CSV %4.1f %4.1f",conf_charge_start_voltage,conf_charge_stop_voltage);
+
+    snprintf(display_line,17, "csV %4.1f %4.1f",conf_charge_start_voltage,conf_charge_stop_voltage);
     display.drawString(0, 3, display_line);
-    snprintf(display_line,17, "CSC %4.1f %4.1f",conf_charge_stop_current,conf_charge_max_current);
+
+    snprintf(display_line,17, "csC %4.1f %4.1f",conf_charge_stop_current,conf_charge_max_current);
     display.drawString(0, 4, display_line);
-    snprintf(display_line,17, "CV %4.1f %4.1f",conf_charger_min_voltage,conf_charger_max_voltage);
+
+    snprintf(display_line,17, "cV %4.1f %4.1f",conf_charger_min_voltage,conf_charger_max_voltage);
     display.drawString(0, 5, display_line);
-    snprintf(display_line,17, "BS %3d %4.1f",(int)conf_battery_shutdown_soc,conf_battery_shutdown_voltage);
+
+    snprintf(display_line,17, "bsSOCV %3d %4.1f",(int)conf_battery_shutdown_soc,conf_battery_shutdown_voltage);
     display.drawString(0, 6, display_line);
     int uss=0;
     for(int i=0;i<USS_COUNT;i++) {
@@ -888,7 +921,7 @@ void displayConfiguration() {
         active_low |= conf_contact_active_low[i]<<i;
     }
 
-    snprintf(display_line,17, "USS%2d CA%3d CL%2d",uss,contact,active_low);
+    snprintf(display_line,17, "uss%2d ca%3d cl%2d",uss,contact,active_low);
     display.drawString(0, 7, display_line);
 }
 
@@ -980,8 +1013,10 @@ void updateDisplayLine1(uint32_t now_ms) {
     status_line_blink[12]        = status_message.status_bitmask & (1<<STATUS_ESC_ENABLED_BIT) ? DISPLAY_NO_BLINK : DISPLAY_SLOW_BLINK;
     
     //Charging and battery status 12-15 (4 symbols)
-    status_line[13]        = status_message.status_bitmask & (1<<STATUS_CHARGING_BIT) ? 'C' : ' ';
-    uint8_t batt_percentage = status_message.batt_percentage >= 100 ? 99 : status_message.batt_percentage < 0 ? 0 : status_message.batt_percentage;
+    status_line[13]        = (status_message.status_bitmask & (1<<STATUS_CHARGING_BIT)) || checkWantCharge() ? 'C' : ' ';
+    //blink C if want charge but no charging
+    status_line_blink[13]  = status_message.status_bitmask & (1<<STATUS_CHARGING_BIT) == 0 ? DISPLAY_FAST_BLINK : DISPLAY_NO_BLINK;
+    uint8_t batt_percentage = status_message.battery_soc >= 100 ? 99 : status_message.battery_soc < 0 ? 0 : status_message.battery_soc;
     status_line[14]        = '0'+batt_percentage/10;
     status_line[15]        = '0'+batt_percentage%10;
     status_line_blink[14]  = status_message.status_bitmask & (1<<STATUS_BMS_TIMEOUT_BIT) ? DISPLAY_SLOW_BLINK : DISPLAY_NO_BLINK;
@@ -1259,6 +1294,10 @@ bool loadConfiguration(char *conf_message) {
     conf_charger_min_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGER_MIN_VOLTAGE*valueSize,val).floatValue;
     conf_charger_max_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGER_MAX_VOLTAGE*valueSize,val).floatValue;
 
+    conf_charge_min_battery_temperature = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_MIN_BATTERY_TEMPERATURE*valueSize,val).floatValue;
+    conf_charge_max_battery_temperature = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_MAX_BATTERY_TEMPERATURE*valueSize,val).floatValue;
+    conf_charge_stop_balancer_temperature = EEPROM.get<ConfigValue>((int)ConfigAddress::CHARGE_STOP_BALANCER_TEMPERATURE*valueSize,val).floatValue;
+
     conf_battery_empty_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_EMPTY_VOLTAGE*valueSize,val).floatValue;
     conf_battery_full_voltage = EEPROM.get<ConfigValue>((int)ConfigAddress::BATTERY_FULL_VOLTAGE*valueSize,val).floatValue;
 
@@ -1284,6 +1323,10 @@ bool loadConfiguration(char *conf_message) {
 
     testFloatOrZero(conf_charger_min_voltage,1,max(conf_charger_max_voltage,conf_battery_full_voltage),"MinCV",conf_message);
     testFloatOrZero(conf_charger_max_voltage,max(conf_charger_min_voltage,conf_battery_empty_voltage),100,"MaxCV",conf_message);
+
+    testFloatOrZero(conf_charge_min_battery_temperature,1,min(30,conf_charge_max_battery_temperature),"MinBT",conf_message);
+    testFloatOrZero(conf_charge_max_battery_temperature,max(1,conf_charge_min_battery_temperature),60,"MaxBT",conf_message);
+    testFloatOrZero(conf_charge_stop_balancer_temperature,30,80,"StopBT",conf_message);
 
     testIntOrZero(conf_charge_start_soc,0,conf_charge_stop_soc,"StaCS",conf_message);
     testIntOrZero(conf_charge_stop_soc,conf_charge_start_soc,100,"StoCS",conf_message);
