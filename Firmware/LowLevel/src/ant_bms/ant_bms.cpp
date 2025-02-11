@@ -170,7 +170,7 @@ void AntBms::on_status_data_(const uint8_t *data, size_t size) {
     return (uint32_t(ant_get_16bit(i + 0)) << 16) | (uint32_t(ant_get_16bit(i + 2)) << 0);
   };
 
-  logFunc_(ESPHOME_LOG_LEVEL_INFO,"Status frame received");
+  logFunc_(ESPHOME_LOG_LEVEL_INFO,"ANT BMS status frame received");
 
   // Status request
   // -> 0x5A 0x5A 0x00 0x00 0x01 0x01

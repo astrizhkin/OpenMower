@@ -39,9 +39,11 @@
 #define MOTOR_STATUS_TIMEOUT_MS 500
 #define IMU_TIMEOUT_MS 200
 
-#define USS_TIMEOUT_MS 1000
+#define USS_TIMEOUT_MS 500
 #define USS_CYCLETIME_MS 50
-#define USS_ECHO_TIMEOUT_US 50000UL
+#define USS_ECHO_TIMEOUT_US 35000UL
+
+//#define USS_TRIGGER_INACTIVE_LOW
 
 // Define to stream debugging messages via USB
 // #define USB_DEBUG
@@ -170,23 +172,26 @@ void updateBlinkState(char *message, uint8_t blinkState, int size, int currentBl
 void onUplinkPacketReceived(const uint8_t *buffer, size_t size);
 bool loadConfiguration(char *conf_message);
 void resetConfiguration();
-ConfigValue &eepromGet(const ConfigAddress address,const uint8_t address2,ConfigValue &val);
-ConfigValue &eepromGet(const ConfigAddress address,ConfigValue &val);
-const ConfigValue &eepromPut(const ConfigAddress address,const uint8_t address2,const ConfigValue &val);
-const ConfigValue &eepromPut(const ConfigAddress address,const ConfigValue &val);
+ConfigValue &eepromGet(const uint8_t address,const uint8_t address2,ConfigValue &val);
+ConfigValue &eepromGet(const uint8_t address,ConfigValue &val);
+const ConfigValue &eepromPut(const uint8_t address,const uint8_t address2,const ConfigValue &val);
+const ConfigValue &eepromPut(const uint8_t address,const ConfigValue &val);
 
 
 void bmsLogFunc(int level, const char * format, ...) {
-#ifdef USB_DEBUG
-    char *string;
-    va_list args;
-    va_start(args, format);
-    // variadic printf with allocated string. must free()
-    vasiprintf(&string, format, args);
-    DEBUG_SERIAL.println(string);
-    free(string);
-    va_end(args);
-#endif //USB_DEBUG
+    if(level > ESPHOME_LOG_LEVEL_CONFIG) {
+        return;
+    }
+    #ifdef USB_DEBUG
+        char *string;
+        va_list args;
+        va_start(args, format);
+        // variadic printf with allocated string. must free()
+        vasiprintf(&string, format, args);
+        DEBUG_SERIAL.println(string);
+        free(string);
+        va_end(args);
+    #endif //USB_DEBUG
 }
 
 void setRaspiPower(bool power) {
@@ -275,19 +280,19 @@ void loop1() {
     bool state;
     double distance;
     uint32_t duration;
-    uint32_t wait_us,response_us,uss_measurement_age_ms;   
+    uint32_t wait_us,uss_measurement_age_ms;
+    //uint32_t response_us;   
 
     for (uint8_t mux_address = 0; mux_address < 7; mux_address++) {
-        gpio_put_masked(0b111 << 13, mux_address << 13);
-        delay(1);
-        
+       
         if(mux_address<USS_COUNT) {
             if ( !conf_uss_enabled[mux_address] ) {
                 duration = 0;
                 distance = 0;
                 continue;
             }
-            digitalWrite(PIN_MUX_OUT, LOW); 
+            gpio_put_masked(0b111 << 13, mux_address << 13);
+
             uint32_t now = millis();
             uint32_t prev_uss_delta_ms = now - last_uss_trigger_ms;
             if(prev_uss_delta_ms < USS_CYCLETIME_MS) {
@@ -307,21 +312,39 @@ void loop1() {
             }else{
                 wait_us = 5;
             }
-  
+
             delayMicroseconds(wait_us);
-            // Sets the trigPin on HIGH state for 20 micro seconds at least
-            digitalWrite(PIN_MUX_OUT, HIGH); 
-            delayMicroseconds(25);
+
+            #ifdef USS_TRIGGER_INACTIVE_LOW    
+                //delay(1);
+                //digitalWrite(PIN_MUX_OUT, LOW); 
+                //delayMicroseconds(USS_ECHO_TIMEOUT_US*2);
+                // Sets the trigPin on HIGH state for 20 micro seconds at least
+                digitalWrite(PIN_MUX_OUT, HIGH); 
+                delayMicroseconds(25);
+                digitalWrite(PIN_MUX_OUT, LOW);
+            #else
+                //delay(1);
+                digitalWrite(PIN_MUX_OUT, LOW); 
+            #endif
+
             last_uss_trigger_ms = millis();
-            digitalWrite(PIN_MUX_OUT, LOW);
             duration = pulseIn(PIN_MUX_IN, HIGH,USS_ECHO_TIMEOUT_US); // 35000UL for full cycle, Reads the echoPin, returns the sound wave travel time in microseconds
-            distance = duration*0.343/2;//0.343mm per 1 microsecond
-            now = millis();
-            response_us = now - last_uss_trigger_ms;
+            //distance = duration*0.1725;//distance in meters (0.343mm per 1 microsecond / 2)
+            distance = duration*0.01725;//distance in centimeters (0.0343cm per 1 microsecond / 2)
+            #ifdef USS_TRIGGER_INACTIVE_LOW
+            #else
+                digitalWrite(PIN_MUX_OUT, HIGH); 
+            #endif
+
+            //response_us = millis() - last_uss_trigger_ms;
             //#ifdef USB_DEBUG
             //    DEBUG_SERIAL.printf("%i %icm %ius wt %ims rsp %ims\t",mux_address,(int)(distance/10),duration,wait_us/1000,response_us);
             //#endif
         } else {
+            gpio_put_masked(0b111 << 13, mux_address << 13);
+            delay(1);
+
             state = gpio_get(PIN_MUX_IN);
         }
 
@@ -333,7 +356,11 @@ void loop1() {
             case 3:
             case 4:
                 if(duration!=0) {
-                    status_message.uss_ranges_m[mux_address]=distance/1000;
+                    distance = distance;
+                    if(distance>255){
+                        distance = 255;
+                    }
+                    status_message.uss_ranges_cm[mux_address]=(uint8_t)(lround(distance));
                     last_uss_sensor_result_ms[mux_address]=last_uss_trigger_ms;
                 }
                 uss_measurement_age_ms = millis() - last_uss_sensor_result_ms[mux_address];
@@ -544,7 +571,7 @@ void onConfigPacketReceived(ll_high_level_config *request) {
         && request->address2>USS_COUNT) {
         request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
         #ifdef USB_DEBUG
-            DEBUG_SERIAL.printf("ConfigRsp: incorrect USS address %d,%d",request->address,request->address2);
+            DEBUG_SERIAL.printf("ConfigRsp: incorrect USS address %d,%d\n",request->address,request->address2);
         #endif
         sendUplinkMessage(request,sizeof(ll_high_level_config));
         return;
@@ -554,14 +581,14 @@ void onConfigPacketReceived(ll_high_level_config *request) {
              && request->address2>CONTACT_COUNT) {
         request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
         #ifdef USB_DEBUG
-            DEBUG_SERIAL.printf("ConfigRsp: incorrect contact address %d,%d",request->address,request->address2);
+            DEBUG_SERIAL.printf("ConfigRsp: incorrect contact address %d,%d\n",request->address,request->address2);
         #endif
         sendUplinkMessage(request,sizeof(ll_high_level_config));
         return;
     } else if (request->address2!=0) {
         request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
         #ifdef USB_DEBUG
-            DEBUG_SERIAL.printf("ConfigRsp: incorrect address2 %d,%d",request->address,request->address2);
+            DEBUG_SERIAL.printf("ConfigRsp: incorrect address2 %d,%d\n",request->address,request->address2);
         #endif
         sendUplinkMessage(request,sizeof(ll_high_level_config));
         return;        
@@ -572,14 +599,14 @@ void onConfigPacketReceived(ll_high_level_config *request) {
         eepromGet(request->address,request->address2,oldValue);
         request->value = oldValue;
         #ifdef USB_DEBUG
-            DEBUG_SERIAL.printf("ConfigRsp: reading address %d,%d=%d",request->address,request->address2,request->value.int32Value);
+            DEBUG_SERIAL.printf("ConfigRsp: reading address %d,%d=%d\n",request->address,request->address2,request->value.int32Value);
         #endif
         sendUplinkMessage(request,sizeof(ll_high_level_config));
     } else if (request->type == PACKET_ID_LL_HIGH_LEVEL_CONFIG_SET) {
         if (request->address==ConfigAddress::EEPROM_STATUS) {
             request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
             #ifdef USB_DEBUG
-                DEBUG_SERIAL.printf("ConfigRsp: read only address %d,%d",request->address,request->address2);
+                DEBUG_SERIAL.printf("ConfigRsp: read only address %d,%d\n",request->address,request->address2);
             #endif
             sendUplinkMessage(request,sizeof(ll_high_level_config));
             return;
@@ -588,17 +615,29 @@ void onConfigPacketReceived(ll_high_level_config *request) {
             if (command==ConfigCommand::CONFIGURATION_LOAD || command==ConfigCommand::CONFIGURATION_SAVE) {
                 char conf_message[17];
                 if (loadConfiguration(conf_message)){
-                    if (command == ConfigCommand::CONFIGURATION_SAVE){
-                        EEPROMFixed.commitFixed();
-                    }
                     #ifdef USB_DEBUG
-                        DEBUG_SERIAL.printf("ConfigRsp: load success %d,%d",request->address,request->address2);
+                        DEBUG_SERIAL.printf("ConfigRsp: load success %d,%d\n",request->address,request->address2);
                     #endif
+                    if (command == ConfigCommand::CONFIGURATION_SAVE){
+                        #ifdef USB_DEBUG
+                            DEBUG_SERIAL.printf("ConfigRsp: commit ...\n");
+                        #endif
+                        //use regular comit to stop other core 
+                        if(!EEPROMFixed.commit()){
+                            #ifdef USB_DEBUG
+                                DEBUG_SERIAL.printf("ConfigRsp: commit failed\n");
+                            #endif
+                        }else{
+                            #ifdef USB_DEBUG
+                                DEBUG_SERIAL.printf("ConfigRsp: commit succeded\n");
+                            #endif
+                        }
+                    }
                     sendUplinkMessage(request,sizeof(ll_high_level_config));
                 } else {
                     request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
                     #ifdef USB_DEBUG
-                        DEBUG_SERIAL.printf("ConfigRsp: load error %d,%d",request->address,request->address2);
+                        DEBUG_SERIAL.printf("ConfigRsp: load error %d,%d\n",request->address,request->address2);
                     #endif
                     sendUplinkMessage(request,sizeof(ll_high_level_config));
                     return;
@@ -606,7 +645,7 @@ void onConfigPacketReceived(ll_high_level_config *request) {
             } else {
                 request->type==PACKET_ID_LL_HIGH_LEVEL_CONFIG_ERR;
                 #ifdef USB_DEBUG
-                    DEBUG_SERIAL.printf("ConfigRsp: unknown command %d,%d=%d",request->address,request->address2,request->value.int32Value);
+                    DEBUG_SERIAL.printf("ConfigRsp: unknown command %d,%d=%d\n",request->address,request->address2,request->value.int32Value);
                 #endif
                 sendUplinkMessage(request,sizeof(ll_high_level_config));
                 return;
@@ -617,13 +656,13 @@ void onConfigPacketReceived(ll_high_level_config *request) {
             if(oldValue.int32Value == request->value.int32Value) {
                 request->type = PACKET_ID_LL_HIGH_LEVEL_CONFIG_GET;
                 #ifdef USB_DEBUG
-                    DEBUG_SERIAL.printf("ConfigRsp: no changes %d,%d=%d",request->address,request->address2,request->value.int32Value);
+                    DEBUG_SERIAL.printf("ConfigRsp: no changes %d,%d=%d\n",request->address,request->address2,request->value.int32Value);
                 #endif
                 sendUplinkMessage(request,sizeof(ll_high_level_config));
             } else {
                 eepromPut(request->address,request->address2,request->value);
                 #ifdef USB_DEBUG
-                    DEBUG_SERIAL.printf("ConfigRsp: set %d,%d=%d",request->address,request->address2,request->value.int32Value);
+                    DEBUG_SERIAL.printf("ConfigRsp: set %d,%d=%d\n",request->address,request->address2,request->value.int32Value);
                 #endif
                 sendUplinkMessage(request,sizeof(ll_high_level_config));
             }
@@ -641,8 +680,12 @@ void onUplinkPacketReceived(const uint8_t *buffer, size_t size) {
     uint16_t crc = CRC16.ccitt(buffer, size - 2);
 
     if (buffer[size - 1] != ((crc >> 8) & 0xFF) ||
-        buffer[size - 2] != (crc & 0xFF))
+        buffer[size - 2] != (crc & 0xFF)) {
+        #ifdef USB_DEBUG
+            DEBUG_SERIAL.printf("got invalid packet %d size %d\n",(int)buffer[0],(int)size);
+        #endif       
         return;
+    }
 
     if (buffer[0] == PACKET_ID_LL_HEARTBEAT && size == sizeof(struct ll_heartbeat)) {
         // CRC and packet is OK, reset watchdog
@@ -662,8 +705,15 @@ void onUplinkPacketReceived(const uint8_t *buffer, size_t size) {
         // copy the state
         last_motor_state = *((struct ll_motor_state *) buffer);
         last_motor_ms = millis();
-    } else if (buffer[0] == PACKET_ID_LL_HIGH_LEVEL_CONFIG_SET && size == sizeof(struct ll_high_level_config)) {
+    } else if ((buffer[0] == PACKET_ID_LL_HIGH_LEVEL_CONFIG_SET || buffer[0] == PACKET_ID_LL_HIGH_LEVEL_CONFIG_GET) && size == sizeof(struct ll_high_level_config)) {
+        //#ifdef USB_DEBUG
+        //    DEBUG_SERIAL.println("got config packet");
+        //#endif
         onConfigPacketReceived((struct ll_high_level_config *) buffer);
+    } else {
+        #ifdef USB_DEBUG
+            DEBUG_SERIAL.printf("got valid unknown packet %d size %d\n",(int)buffer[0],(int)size);
+        #endif       
     }
 }
 
@@ -691,7 +741,7 @@ bool checkChargeCurrentOk() {
 bool checkWantCharge() {
     return (ant_bms_parser.is_online() && conf_charge_start_soc!=0
                 ? status_message.battery_soc < conf_charge_start_soc 
-                : status_message.v_battery < conf_charge_start_voltage);
+                : conf_charge_start_voltage!=0 ? status_message.v_battery < conf_charge_start_voltage : false);
 }
 
 bool checkShouldStartCharge() {
@@ -711,7 +761,7 @@ bool checkShouldStopCharge() {
         //|| status_message.charging_current < 0.5
         || (ant_bms_parser.is_online() && conf_charge_stop_soc!=0
                 ? status_message.battery_soc > conf_charge_stop_soc 
-                : status_message.v_battery > conf_charge_stop_voltage)
+                : conf_charge_stop_voltage!=0 ? status_message.v_battery > conf_charge_stop_voltage : true)
         || !checkChargeCurrentOk();
 }
 
@@ -856,8 +906,14 @@ void loop() {
             //status_message.v_battery = ant_bms_parser.total_voltage_sensor_;
             status_message.battery_current = -ant_bms_parser.current_sensor_;//reverse current sensor
             status_message.battery_soc = ant_bms_parser.soc_sensor_;
-            status_message.battery_temperature = ant_bms_parser.temperatures_[0].temperature_sensor_;
-            status_message.balancer_temperature = ant_bms_parser.temperatures_[1].temperature_sensor_;
+            //MOS 
+            //status_message.battery_temperature = ant_bms_parser.temperatures_[0].temperature_sensor_;
+            //Balance
+            //status_message.balancer_temperature = ant_bms_parser.temperatures_[1].temperature_sensor_;
+            //T1
+            status_message.battery_temperature = ant_bms_parser.temperatures_[2].temperature_sensor_;
+            //T2
+            status_message.balancer_temperature = ant_bms_parser.temperatures_[3].temperature_sensor_;
         }
 #endif //BMS_SERIAL
         if (status_message.battery_soc > 100) {
@@ -1092,7 +1148,7 @@ void updateDisplayLine1(uint32_t now_ms) {
     //Charging and battery status 12-15 (4 symbols)
     status_line[13]        = (status_message.status_bitmask & (1<<STATUS_CHARGING_BIT)) || checkWantCharge() ? 'C' : ' ';
     //blink C if want charge but no charging
-    status_line_blink[13]  = status_message.status_bitmask & (1<<STATUS_CHARGING_BIT) == 0 ? DISPLAY_FAST_BLINK : DISPLAY_NO_BLINK;
+    status_line_blink[13]  = (status_message.status_bitmask & (1<<STATUS_CHARGING_BIT)) == 0 ? DISPLAY_FAST_BLINK : DISPLAY_NO_BLINK;
     uint8_t batt_percentage = status_message.battery_soc >= 100 ? 99 : status_message.battery_soc < 0 ? 0 : status_message.battery_soc;
     status_line[14]        = '0'+batt_percentage/10;
     status_line[15]        = '0'+batt_percentage%10;
@@ -1209,12 +1265,17 @@ void updateDisplayLine6(uint32_t now_ms) {
 }
 
 void updateDisplayLine7(uint32_t now_ms) {
-    snprintf(display_line,17, "USS %3d %3d %3d",(int)(status_message.uss_ranges_m[0]*100),(int)(status_message.uss_ranges_m[1]*100),(int)(status_message.uss_ranges_m[2]*100));
+    snprintf(display_line,17, "USS %3d %3d %3d",
+    status_message.uss_age_ms[0]<USS_TIMEOUT_MS ? (int)(status_message.uss_ranges_cm[0]) : -1,
+    status_message.uss_age_ms[1]<USS_TIMEOUT_MS ? (int)(status_message.uss_ranges_cm[1]) : -1,
+    status_message.uss_age_ms[2]<USS_TIMEOUT_MS ? (int)(status_message.uss_ranges_cm[2]) : -1);
     display.drawString(0, 6, display_line);
 }
 
 void updateDisplayLine8(uint32_t now_ms) {
-    snprintf(display_line,17, "USS %3d %3d",(int)(status_message.uss_ranges_m[3]*100),(int)(status_message.uss_ranges_m[4]*100));
+    snprintf(display_line,17, "USS %3d %3d",
+    status_message.uss_age_ms[3]<USS_TIMEOUT_MS ? (int)(status_message.uss_ranges_cm[3]) : -1,
+    status_message.uss_age_ms[4]<USS_TIMEOUT_MS ? (int)(status_message.uss_ranges_cm[4]) : -1);
     display.drawString(0, 7, display_line);
 }
 
@@ -1346,23 +1407,23 @@ void updateDisplay(uint32_t now_ms) {
     }
 }*/
 
-ConfigValue &eepromGet(const ConfigAddress address,const uint8_t address2,ConfigValue &val){
+ConfigValue &eepromGet(const uint8_t address,const uint8_t address2,ConfigValue &val){
     int valueSize = sizeof(union ConfigValue);
     int realAddress = ((int)address + (int)address2*4)*valueSize;
     return EEPROMFixed.get<ConfigValue>(realAddress,val);
 }
 
-ConfigValue &eepromGet(const ConfigAddress address,ConfigValue &val){
+ConfigValue &eepromGet(const uint8_t address,ConfigValue &val){
     return eepromGet(address,0,val);
 }
 
-const ConfigValue &eepromPut(const ConfigAddress address,const uint8_t address2,const ConfigValue &val){
+const ConfigValue &eepromPut(const uint8_t address,const uint8_t address2,const ConfigValue &val){
     int valueSize = sizeof(union ConfigValue);
     int realAddress = ((int)address + (int)address2*4)*valueSize;
     return EEPROMFixed.put<ConfigValue>(realAddress,val);
 }
 
-const ConfigValue &eepromPut(const ConfigAddress address,const ConfigValue &val){
+const ConfigValue &eepromPut(const uint8_t address,const ConfigValue &val){
     return eepromPut(address,0,val);
 }
 
@@ -1433,17 +1494,9 @@ bool loadConfiguration(char *conf_message) {
 
     conf_charge_start_soc = eepromGet(ConfigAddress::CHARGE_START_SOC,val).int8Value;
     conf_charge_start_voltage = eepromGet(ConfigAddress::CHARGE_START_VOLTAGE,val).floatValue;
-    if(conf_charge_start_soc==0 && conf_charge_start_voltage==0) {
-        snprintf(conf_message,sizeof(conf_message),"Sta CS=0&CV=0");
-        conf_valid=false;
-    }
 
     conf_charge_stop_soc = eepromGet(ConfigAddress::CHARGE_STOP_SOC,val).int8Value;
     conf_charge_stop_voltage = eepromGet(ConfigAddress::CHARGE_STOP_VOLTAGE,val).floatValue;
-    if(conf_charge_stop_soc==0 && conf_charge_stop_voltage==0) {
-        snprintf(conf_message,sizeof(conf_message),"Sto CS=0&CV=0");
-        conf_valid=false;
-    }
 
     conf_charge_max_current = eepromGet(ConfigAddress::CHARGE_MAX_CURRENT,val).floatValue;
     conf_charge_stop_current = eepromGet(ConfigAddress::CHARGE_STOP_CURRENT,val).floatValue;
