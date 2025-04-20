@@ -719,23 +719,23 @@ void onUplinkPacketReceived(const uint8_t *buffer, size_t size) {
 
 bool checkBatteryTemperatureOk() {
     return !ant_bms_parser.is_online() || 
-        ((conf_charge_min_battery_temperature==0 || status_message.battery_temperature > conf_charge_min_battery_temperature) &&
-         (conf_charge_max_battery_temperature==0 || status_message.battery_temperature < conf_charge_max_battery_temperature));
+        ((conf_charge_min_battery_temperature==0 || status_message.battery_temperature >= conf_charge_min_battery_temperature) &&
+         (conf_charge_max_battery_temperature==0 || status_message.battery_temperature <= conf_charge_max_battery_temperature));
 }
 
 bool checkBalancerTemperatureOk() {
     return !ant_bms_parser.is_online() 
-        || conf_charge_stop_balancer_temperature==0 || status_message.balancer_temperature < conf_charge_stop_balancer_temperature;
+        || conf_charge_stop_balancer_temperature==0 || status_message.balancer_temperature <= conf_charge_stop_balancer_temperature;
 }
 
 bool checkChargerVoltageOk() {
-    return (conf_charger_max_voltage==0 || status_message.v_charge < conf_charger_max_voltage) 
-        && (conf_charger_min_voltage==0 || status_message.v_charge > conf_charger_min_voltage);
+    return (conf_charger_max_voltage==0 || status_message.v_charge <= conf_charger_max_voltage) 
+        && (conf_charger_min_voltage==0 || status_message.v_charge >= conf_charger_min_voltage);
 }
 
 bool checkChargeCurrentOk() {
-     return (conf_charge_max_current==0 || status_message.battery_current < conf_charge_max_current)
-        && (conf_charge_stop_current==0 || status_message.battery_current > conf_charge_stop_current);
+     return (conf_charge_max_current==0 || status_message.battery_current <= conf_charge_max_current)
+        && (conf_charge_stop_current==0 || status_message.battery_current >= conf_charge_stop_current);
 }
 
 bool checkWantCharge() {
