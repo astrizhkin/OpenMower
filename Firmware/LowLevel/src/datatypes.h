@@ -75,6 +75,16 @@ typedef enum StatusBits {
 #define MOTOR_STATUS_BATTERY_L1             13
 #define MOTOR_STATUS_BATTERY_L2             14
 
+#define POWER_REQUEST_PI                            0
+#define POWER_REQUEST_MOTOR                         1
+#define POWER_REQUEST_LED                           2
+#define POWER_REQUEST_RESERVED                      3
+
+#define POWER_REQUEST_BITS_OFF                      0
+#define POWER_REQUEST_BITS_ON                       1
+#define POWER_REQUEST_BITS_LOW_FREQ                 2
+#define POWER_REQUEST_BITS_HIGH_FREQ                3
+
 #define DISPLAY_NO_BLINK    0b0000
 #define DISPLAY_FAST_BLINK  0b0001
 #define DISPLAY_NORM_BLINK  0b0010
@@ -131,9 +141,8 @@ struct ll_status {
     // Bit 2: Charging enabled
     // Bit 3: ESC power enabled
     // Bit 4: Rain detected
-    // Bit 5: don't care
-    // Bit 6: don't care
-    // Bit 7: don't care
+    // Bit 5-15: don't care
+
     uint16_t status_bitmask;
     // USS range in m
     uint8_t uss_ranges_cm[USS_COUNT];
@@ -182,6 +191,8 @@ struct ll_imu {
 struct ll_heartbeat {
     // Type of this message. Has to be PACKET_ID_LL_HEARTBEAT.
     uint8_t type;
+    // 4 x 2 bits per power output (see POWER_REQUEST_... defines)
+    uint8_t power_request;
     //high level emergency bits (e.g. navigation error, ...)
     uint8_t emergency_high_level;
     uint16_t crc;
@@ -232,24 +243,24 @@ typedef enum ConfigAddress {
 
   //charge group (20)
   CHARGE_START_SOC = 10, //int percent, 0 - disable
-  CHARGE_START_VOLTAGE = 11,//float volt, 0 - disable
+  CHARGE_START_VOLTAGE = 11,//float voltage, 0 - disable
   CHARGE_STOP_SOC = 12,  //int percent, 0 - disable
-  CHARGE_STOP_VOLTAGE = 13,//float volt, 0 - disable
+  CHARGE_STOP_VOLTAGE = 13,//float voltage, 0 - disable
   CHARGE_STOP_CURRENT = 14,//float current, 0 - disable
   CHARGE_MAX_CURRENT = 15,//float current, 0 - disable
-  CHARGER_MAX_VOLTAGE = 16,//float volt, 0 - disable
-  CHARGER_MIN_VOLTAGE = 17,//float volt, 0 - disable
-  CHARGE_MIN_BATTERY_TEMPERATURE = 18, //int percent, 0 - disable
-  CHARGE_MAX_BATTERY_TEMPERATURE = 19,//float volt, 0 - disable
-  CHARGE_STOP_BALANCER_TEMPERATURE = 20,//float volt, 0 - disable
+  CHARGER_MAX_VOLTAGE = 16,//float voltage, 0 - disable
+  CHARGER_MIN_VOLTAGE = 17,//float voltage, 0 - disable
+  CHARGE_MIN_BATTERY_TEMPERATURE = 18, //float temparature, 0 - disable
+  CHARGE_MAX_BATTERY_TEMPERATURE = 19,//float temparature, 0 - disable
+  CHARGE_STOP_BALANCER_TEMPERATURE = 20,//float temparature, 0 - disable
 
   //battery group (10)
-  BATTERY_EMPTY_VOLTAGE = 30,//float current, 0 - disable
-  BATTERY_FULL_VOLTAGE = 31,//float current, 0 - disable
+  BATTERY_EMPTY_VOLTAGE = 30,//float voltage, 0 - disable
+  BATTERY_FULL_VOLTAGE = 31,//float voltage, 0 - disable
   BATTERY_LOW_WARNING_SOC = 32,//int percent, 0 - disable
-  BATTERY_LOW_WARNING_VOLTAGE = 33,//float current, 0 - disable
+  BATTERY_LOW_WARNING_VOLTAGE = 33,//float voltage, 0 - disable
   BATTERY_SHUTDOWN_SOC = 34,//int percent, 0 - disable
-  BATTERY_SHUTDOWN_VOLTAGE = 35,//float current, 0 - disable
+  BATTERY_SHUTDOWN_VOLTAGE = 35,//float voltage, 0 - disable
 
   //contact group (4x8)
   CONTACT_MODE = 40,//ContactMode, address2 is requred

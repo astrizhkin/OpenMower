@@ -101,7 +101,7 @@ struct ll_high_level_state last_high_level_state = {0};
 struct ll_motor_state last_motor_state = {0};
 
 //bool emergency_latch = true;
-//bool ROS_running = false;
+uint8_t power_request = 0;
 uint8_t emergency_high_level = 0;
 
 // A mutex which is used by core1 each time status_message is modified.
@@ -208,12 +208,25 @@ void setEscEnable(bool enable) {
     digitalWrite(PIN_ESC_ENABLE, enable);
 }
 
+void updateEscEnabled() {
+    //ESC must be enabled 
+    uint8_t espPowerRequest = (power_request >> (POWER_REQUEST_MOTOR<<1)) & 0x3;//two bits at desired position
+    setEscEnable(
+        status_message.emergency_bitmask==0 && 
+        espPowerRequest == POWER_REQUEST_BITS_ON /*&& 
+        last_high_level_state.current_mode != HighLevelMode::MODE_IDLE*/
+    );
+}
+
 void updateEmergency() {
     uint8_t last_emergency_low_leve_state = status_message.emergency_bitmask;
     uint8_t emergency_low_level_state = 0;
 
     uint32_t now = millis();
     if (now - last_heartbeat_ms > HEARTBEAT_TIMEOUT_MS) {
+        emergency_low_level_state |= 1<<EMERGENCY_ROS_TIMEOUT;
+    }
+    if (now - last_high_level_ms > HIGH_LEVEL_TIMEOUT_MS) {
         emergency_low_level_state |= 1<<EMERGENCY_ROS_TIMEOUT;
     }
     if (emergency_high_level!=0) {
@@ -249,10 +262,8 @@ void updateEmergency() {
         DEBUG_SERIAL.printf("Emergency %d %d %d %d\n",emergency1,emergency2,emergency3,emergency4);
     #endif*/
 
-    //ESC must be enabled 
-    setEscEnable(emergency_low_level_state==0);
-
     status_message.emergency_bitmask = emergency_low_level_state;
+    updateEscEnabled();
 
     // If emergency bits are chnaged, instantly send the message.
     if (last_emergency_low_leve_state != emergency_low_level_state) {
@@ -691,6 +702,7 @@ void onUplinkPacketReceived(const uint8_t *buffer, size_t size) {
         // CRC and packet is OK, reset watchdog
         struct ll_heartbeat *heartbeat = (struct ll_heartbeat *) buffer;
         last_heartbeat_ms = millis();
+        power_request = heartbeat->power_request;
         emergency_high_level = heartbeat->emergency_high_level;
     } else if (buffer[0] == PACKET_ID_LL_HIGH_LEVEL_STATE && size == sizeof(struct ll_high_level_state)) {
         // copy the state
