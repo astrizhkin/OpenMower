@@ -210,10 +210,10 @@ void setEscEnable(bool enable) {
 
 void updateEscEnabled() {
     //ESC must be enabled 
-    uint8_t espPowerRequest = (power_request >> (POWER_REQUEST_MOTOR<<1)) & 0x3;//two bits at desired position
+    uint8_t escPowerRequest = (power_request >> (POWER_REQUEST_MOTOR<<1)) & 0x3;//two bits at desired position
     setEscEnable(
         status_message.emergency_bitmask==0 && 
-        espPowerRequest == POWER_REQUEST_BITS_ON /*&& 
+        escPowerRequest == POWER_REQUEST_BITS_ON /*&& 
         last_high_level_state.current_mode != HighLevelMode::MODE_IDLE*/
     );
 }
