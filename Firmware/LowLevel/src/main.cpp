@@ -226,9 +226,9 @@ void updateEmergency() {
     if (now - last_heartbeat_ms > HEARTBEAT_TIMEOUT_MS) {
         emergency_low_level_state |= 1<<EMERGENCY_ROS_TIMEOUT;
     }
-    if (now - last_high_level_ms > HIGH_LEVEL_TIMEOUT_MS) {
-        emergency_low_level_state |= 1<<EMERGENCY_ROS_TIMEOUT;
-    }
+    //if (now - last_high_level_ms > HIGH_LEVEL_TIMEOUT_MS) {
+    //    emergency_low_level_state |= 1<<EMERGENCY_ROS_TIMEOUT;
+    //}
     if (emergency_high_level!=0) {
         emergency_low_level_state |= 1<<EMERGENCY_HIGH_LEVEL;
     }
