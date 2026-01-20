@@ -1,4 +1,5 @@
 #include "ant_bms.h"
+#include <vector>
 
 namespace ant_bms {
 
