@@ -14,14 +14,14 @@ bool EEPROMClassFixed::commitFixed() {
         return false;
     }
 
-    if (!__isFreeRTOS) {
+    //if (!__isFreeRTOS) {
         noInterrupts();
-    }
+    //}
     flash_range_erase((intptr_t)_sector - (intptr_t)XIP_BASE, 4096);
     flash_range_program((intptr_t)_sector - (intptr_t)XIP_BASE, _data, _size);
-    if (!__isFreeRTOS) {
+    //if (!__isFreeRTOS) {
         interrupts();
-    }
+    //}
     _dirty = false;
 
     return true;
